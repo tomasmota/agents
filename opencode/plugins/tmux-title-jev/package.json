@@ -1,0 +1,23 @@
+{
+  "name": "opencode-tmux-title-jev",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./tui": "./tui.js"
+  },
+  "files": [
+    "index.js",
+    "tui.js",
+    "core.js",
+    "lib/jev-client.js"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.16"
+  }
+}
