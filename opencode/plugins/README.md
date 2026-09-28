@@ -6,6 +6,7 @@ everything it imports. Packages may also export `./tui` for terminal behavior.
 
 | Directory | Plugin ID | What it does |
 |---|---|---|
+| `auto-retitle/` | `tomas.auto-retitle` | Re-evaluates the session title after each idle turn with `openai/gpt-6-luna#low` and renames the session when focus clearly changed. Never overwrites manual renames. |
 | `auto-approve-jev/` | `tomas.auto-approve-jev` | Reviews permission evaluations with TypeSafe Jev, auto-allowing read-only actions and denying clearly catastrophic ones. |
 | `stuck-command/` | `tomas.stuck-command-jev` | Asks Jev whether a foreground shell command that is still running is hung (after 60 s, then every 60 s) and interrupts the session with an explanation when it is. |
 | `tmux-title-jev/` | `tomas.tmux-title-jev` | Uses Jev to choose a short branch-like task name and renames the tmux window containing the OpenCode TUI to `<repo>:<name>`. |
@@ -21,6 +22,7 @@ Reference a directory as a Git package in `opencode.json(c)`:
 ```jsonc
 {
   "plugins": [
+    "git+ssh://git@github.com/tomasmota/agents.git#<ref>::path:opencode/plugins/auto-retitle",
     "git+ssh://git@github.com/tomasmota/agents.git#<ref>::path:opencode/plugins/auto-approve-jev",
     "git+ssh://git@github.com/tomasmota/agents.git#<ref>::path:opencode/plugins/stuck-command",
     "git+ssh://git@github.com/tomasmota/agents.git#<ref>::path:opencode/plugins/tmux-title-jev"
@@ -43,5 +45,5 @@ to the consumers, and keep the shared-copy tests current.
 ## Tests
 
 ```sh
-for dir in auto-approve-jev stuck-command tmux-title-jev; do (cd "$dir" && npm ci && npm test); done
+for dir in auto-retitle auto-approve-jev stuck-command tmux-title-jev; do (cd "$dir" && npm ci && npm test); done
 ```
