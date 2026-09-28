@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process"
+import { basename, dirname } from "node:path"
 
 import { answerChoice, numberEnv, recordOf, requestJev } from "./lib/jev-client.js"
 
@@ -160,6 +161,20 @@ function firstUserText(messages) {
   return ""
 }
 
+// Uses the shared git dir so every worktree of a repo reports the main repo's
+// name. Outside git, falls back to the directory name.
+function repoName(directory, run = spawnSync) {
+  if (!directory) return ""
+  const result = run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+    cwd: directory,
+    encoding: "utf8",
+  })
+  const commonDir = result?.status === 0 ? String(result.stdout ?? "").trim() : ""
+  if (!commonDir) return basename(directory)
+  const name = basename(commonDir) === ".git" ? basename(dirname(commonDir)) : basename(commonDir)
+  return name.replace(/\.git$/, "")
+}
+
 const defaultRuntime = {
   env: process.env,
   spawnSync,
@@ -193,12 +208,14 @@ export function createTmuxTitleNamer(overrides = {}) {
     }
   }
 
-  async function rename({ sessionID, title, request = "" }) {
+  async function rename({ sessionID, title, request = "", directory = "" }) {
     if (!hasTmux || typeof sessionID !== "string" || typeof title !== "string" || !title.trim()) return null
-    const key = `${sessionID}\0${title}`
+    const key = `${sessionID}\0${title}\0${directory}`
     if (renamed.has(key)) return renamed.get(key)
     if (pending.has(key)) return pending.get(key)
-    const work = choose(title, request).then((name) => {
+    const work = choose(title, request).then((task) => {
+      const repo = repoName(directory, runtime.spawnSync)
+      const name = repo ? `${repo}:${task}` : task
       runtime.spawnSync("tmux", ["rename-window", "-t", pane, name], { stdio: "ignore" })
       renamed.set(key, name)
       pending.delete(key)
@@ -222,4 +239,5 @@ export const tmuxTitleInternals = {
   firstUserText,
   normalizedWords,
   parseChoice,
+  repoName,
 }

@@ -2,8 +2,9 @@
 //
 // After OpenCode generates a session title, this plugin builds short, valid
 // branch-like candidates and asks Jev which one best describes the work. It
-// then renames the tmux window containing this TUI. Jev failure falls back to
-// the first deterministic candidate.
+// then renames the tmux window containing this TUI to `<repo>:<name>`, where
+// `<repo>` is the session directory's git repo (or the directory name outside
+// git). Jev failure falls back to the first deterministic candidate.
 //
 // Runtime configuration:
 //   TYPESAFE_API_KEY                         required; falls back to ~/.config/home-manager/secrets.env
@@ -33,13 +34,16 @@ export const TmuxTitleJevTuiPlugin = Plugin.define({
 
     const enqueue = (sessionID, title) => {
       if (!sessionID || !title) return
-      const key = `${sessionID}\0${title}`
+      const directory = context.data.session.get(sessionID)?.location?.directory
+        || context.location?.directory
+        || process.cwd()
+      const key = `${sessionID}\0${title}\0${directory}`
       if (key === lastCompleted || pending.has(key)) return
       pending.add(key)
       work = work.then(async () => {
         await context.data.session.message.sync(sessionID)
         const request = firstUserText(context.data.session.message.list(sessionID))
-        await namer.rename({ sessionID, title, request })
+        await namer.rename({ sessionID, title, request, directory })
         lastCompleted = key
       }).catch((error) => console.error("tmux-title-jev failed", error))
         .finally(() => pending.delete(key))

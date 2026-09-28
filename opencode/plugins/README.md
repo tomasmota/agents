@@ -8,7 +8,7 @@ everything it imports. Packages may also export `./tui` for terminal behavior.
 |---|---|---|
 | `auto-approve-jev/` | `tomas.auto-approve-jev` | Reviews permission evaluations with TypeSafe Jev, auto-allowing read-only actions and denying clearly catastrophic ones. |
 | `stuck-command/` | `tomas.stuck-command-jev` | Asks Jev whether a foreground shell command that is still running is hung (after 60 s, then every 60 s) and interrupts the session with an explanation when it is. |
-| `tmux-title-jev/` | `tomas.tmux-title-jev` | Uses Jev to choose a short branch-like task name and renames the tmux window containing the OpenCode TUI. |
+| `tmux-title-jev/` | `tomas.tmux-title-jev` | Uses Jev to choose a short branch-like task name and renames the tmux window containing the OpenCode TUI to `<repo>:<name>`. |
 
 Configuration is documented in the header comment of each plugin's entry file.
 The Jev integrations read `TYPESAFE_API_KEY` from the environment, falling back to

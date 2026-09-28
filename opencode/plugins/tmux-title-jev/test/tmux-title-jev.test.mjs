@@ -4,7 +4,7 @@ import test from "node:test"
 
 import { tmuxTitleInternals } from "../core.js"
 
-const { buildNameCandidates, createTmuxTitleNamer, firstUserText } = tmuxTitleInternals
+const { buildNameCandidates, createTmuxTitleNamer, firstUserText, repoName } = tmuxTitleInternals
 
 test("lib/jev-client.js matches the canonical plugin copy", async () => {
   const local = await readFile(new URL("../lib/jev-client.js", import.meta.url), "utf8")
@@ -43,17 +43,30 @@ test("lets Jev select a complete valid name and renames the owning window", asyn
         },
       }
     },
-    spawnSync: (...args) => calls.push(args),
+    spawnSync: (command, args, options) => {
+      if (command === "git") return { status: 0, stdout: "/home/me/dev/agents/.git\n" }
+      calls.push([command, args, options])
+    },
   })
 
   const name = await namer.rename({
     sessionID: "ses_1",
     title: "Auto-rename tmux tabs based on session work",
     request: "Rename the tab to match the work.",
+    directory: "/home/me/dev/agents",
   })
 
-  assert.equal(name, "rename-tmux-tabs")
-  assert.deepEqual(calls[0], ["tmux", ["rename-window", "-t", "%7", "rename-tmux-tabs"], { stdio: "ignore" }])
+  assert.equal(name, "agents:rename-tmux-tabs")
+  assert.deepEqual(calls[0], ["tmux", ["rename-window", "-t", "%7", "agents:rename-tmux-tabs"], { stdio: "ignore" }])
+})
+
+test("resolves the repo name from the git common dir", () => {
+  const git = (stdout, status = 0) => () => ({ status, stdout })
+  assert.equal(repoName("/home/me/dev/agents", git("/home/me/dev/agents/.git\n")), "agents")
+  assert.equal(repoName("/home/me/wt/feature-x", git("/home/me/dev/agents/.git\n")), "agents")
+  assert.equal(repoName("/srv/repos/agents.git", git("/srv/repos/agents.git\n")), "agents")
+  assert.equal(repoName("/home/me/scratch", git("", 128)), "scratch")
+  assert.equal(repoName("", git("/x/.git\n")), "")
 })
 
 test("falls back deterministically when Jev is unavailable and deduplicates a title", async () => {
