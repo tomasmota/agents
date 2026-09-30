@@ -9,7 +9,7 @@ everything it imports. Packages may also export `./tui` for terminal behavior.
 | `auto-retitle/` | `tomas.auto-retitle` | Re-evaluates the session title after each idle turn with `openai/gpt-6-luna#low` and renames the session when focus clearly changed. Never overwrites manual renames. |
 | `auto-approve-jev/` | `tomas.auto-approve-jev` | Reviews permission evaluations with TypeSafe Jev, auto-allowing read-only actions and denying clearly catastrophic ones. |
 | `stuck-command/` | `tomas.stuck-command-jev` | Asks Jev whether a foreground shell command that is still running is hung (after 60 s, then every 60 s) and interrupts the session with an explanation when it is. |
-| `tmux-title-jev/` | `tomas.tmux-title-jev` | Uses Jev to choose a short branch-like task name and renames the tmux window containing the OpenCode TUI to `<repo>:<name>`. |
+| `tmux-title-jev/` | `tomas.tmux-title-jev` | After each completed turn, Jev compares the tmux title with the latest user message and final agent output; replaces misleading titles with `<repo>:<task>` while keeping titles that still fit. |
 | `gcloud-auth-healer/` | `tomas.gcloud-auth-healer` | Detects expired gcloud/ADC auth failures after shell commands, starts the re-login in the background (at most once per cooldown), and tells the agent to complete the browser prompt and poll. |
 
 Configuration is documented in the header comment of each plugin's entry file.

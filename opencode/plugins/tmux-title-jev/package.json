@@ -12,6 +12,7 @@
     "index.js",
     "tui.js",
     "core.js",
+    "controller.js",
     "lib/jev-client.js"
   ],
   "scripts": {
