@@ -1,0 +1,16 @@
+{
+  "name": "opencode-auto-handoff",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "auto-handoff.js",
+  "files": [
+    "auto-handoff.js"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.0.21"
+  }
+}
