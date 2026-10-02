@@ -178,6 +178,7 @@ export function check(monitor, event) {
 export function createMonitor(config) {
   const state = {
     status: "watching",
+    completing: false,
     tokens: 0,
     sessionID: undefined,
     directory: undefined,
@@ -253,8 +254,13 @@ export function createMonitor(config) {
   }
 
   // Runs when the old session goes idle: the document should exist by then.
+  // Single-flight: the event stream invokes this unawaited for every event,
+  // and concurrent callers would each pass the status check before the first
+  // await and create their own successor session. Every exit path below sets
+  // a terminal status, so the flag never needs clearing.
   async function complete() {
-    if (state.status !== "writing") return
+    if (state.status !== "writing" || state.completing) return
+    state.completing = true
     const ready = await waitForDocument(state.documentPath, config.fs, {
       timeout: config.waitTimeout,
       interval: config.waitInterval,

@@ -223,6 +223,19 @@ test("remembers the handoff so it never fires twice", async () => {
   assert.equal(check(monitor, requestEvent({ messages: [textMessage("q")] })), "skip")
 })
 
+test("creates only one successor when events stack during the document wait", async () => {
+  const { monitor, calls } = harness({ waitInterval: 5 })
+  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
+  check(monitor, event)
+  await monitor.start(event)
+  // The event stream fires complete() unawaited for every event; before the
+  // single-flight guard, every concurrent caller created its own successor.
+  await Promise.all(Array.from({ length: 50 }, () => monitor.complete()))
+  assert.equal(calls.create.length, 1)
+  assert.equal(calls.prompt.length, 1)
+  assert.equal(monitor.state.status, "done")
+})
+
 test("leaves the session alone when no document appears", async () => {
   const { monitor, calls } = harness({ documentPath: "/tmp/missing.md", files: {}, waitTimeout: 0, waitInterval: 1 })
   const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
