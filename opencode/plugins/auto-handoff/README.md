@@ -1,30 +1,24 @@
 # Automatic handoff at a context threshold
 
-An OpenCode V2 server plugin that hands a long session off to a fresh one
-before it gets expensive or unreliable. It uses the `session` model-request hook
-to watch each session's real request size; no polling, no extra model call, and
+An OpenCode V2 server plugin that steers a long session into a handoff before
+it gets expensive or unreliable. It uses the `session` model-request hook to
+watch each session's real request size; no polling, no extra model call, and
 no separate summarizer.
 
 ## Behavior
 
 When a session's assembled request (system instructions + tool schemas +
-messages) crosses the threshold:
+messages) crosses the threshold, the current agent is asked, once, to do a
+handoff with the `handoff` skill: write the document, spawn the next session
+with it as the first prompt, and attach the user to it, all as that skill
+describes. An automatic handoff carries no new direction from the user, because
+the user is not there to give any.
 
-1. The current agent is asked, once, to use the `handoff` skill in
-   document-only mode and write the document to a temp path the plugin picks.
-2. When that session goes idle, the plugin reads the finished document.
-3. A new session is created in the same directory with the same agent and model,
-   and the document is submitted as its first prompt. The successor continues
-   the same work; an automatic handoff carries no new direction from the user,
-   because the user is not there to give any.
-4. The old session is told to attach the new session to a tmux pane
-   (`tmux split-window -h -c <dir> -t "$TMUX_PANE" opencode --session <id>`)
-   and then to stop.
-
-The document is written in a temp directory, never in the worktree, and stays
-on disk as a fallback. If any step fails, the old session keeps working and the
-document is still readable. Each session hands off at most once, recorded in
-plugin storage, so a server restart cannot cause a second handoff.
+The plugin deliberately does no more than that. It never creates a session,
+submits a prompt, or touches tmux: the `handoff` skill is the single source of
+truth for spawn mechanics, including model resolution through `model-selector`.
+Each session is steered at most once, recorded in plugin storage, so a server
+restart cannot cause a second steer.
 
 ## Threshold
 
@@ -61,14 +55,13 @@ opencode plugin update 'git+ssh://git@github.com/tomasmota/agents.git#main::path
 ## Limits
 
 - The handoff is as good as the document the agent writes; a rushed document
-  loses state. The plugin only orchestrates, it does not summarize.
+  loses state. The plugin only measures and steers, it does not summarize.
 - The successor starts from the document alone. Anything the current agent
   knows but did not write down is gone, so the steer asks for the skill's full
-  document format rather than a summary.
-- The tmux pane is opened by the old session's agent, so it needs a tmux
-  session; outside tmux the agent reports the new session ID instead.
-- A monitor waits up to five minutes for the document to stop growing. If the
-  agent never writes it, the old session is left alone and does not re-arm.
+  document flow rather than a summary.
+- The plugin steers once per session and cannot verify that the handoff
+  happened. If the agent ignores the steer, the session continues unguarded;
+  the next handoff has to be asked for manually.
 
 ## Test
 
@@ -78,5 +71,5 @@ npm test
 ```
 
 Fixtures are fictional. Unit tests cover token estimation, the threshold
-decision, the steer texts, session creation, the pane instruction, and
-fail-closed paths, without making model requests.
+decision, the steer text, the once-only guard, and storage-failure paths,
+without making model requests.

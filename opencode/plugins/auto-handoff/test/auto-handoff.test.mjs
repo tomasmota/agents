@@ -3,16 +3,7 @@ import test from "node:test"
 
 import { AutoHandoffPlugin } from "../auto-handoff.js"
 
-const {
-  check,
-  createMonitor,
-  estimateText,
-  handoffInstruction,
-  paneInstruction,
-  requestTokens,
-  shellQuote,
-  thresholdOf,
-} = AutoHandoffPlugin.__test()
+const { check, createMonitor, estimateText, handoffInstruction, requestTokens, thresholdOf } = AutoHandoffPlugin.__test()
 
 const SYSTEM = [{ type: "text", text: "You are a helpful assistant." }]
 const TOOLS = {
@@ -38,47 +29,12 @@ function requestEvent({ sessionID = "ses_test", system = SYSTEM, messages = [], 
   return { sessionID, agent: "build", model: { providerID: "example", id: "fake-model" }, system, messages, options: {}, tools }
 }
 
-function fakeFs(files = {}) {
-  return {
-    open: async (pathname) => {
-      if (!(pathname in files)) throw new Error("ENOENT")
-      const content = files[pathname]
-      let cursor = 0
-      return {
-        async read(buffer, offset, length) {
-          const total = Buffer.byteLength(content)
-          if (cursor >= total) return { bytesRead: 0 }
-          const end = Math.min(cursor + length, total)
-          const bytesRead = end - cursor
-          Buffer.from(content).subarray(cursor, end).copy(buffer, offset)
-          cursor = end
-          return { bytesRead }
-        },
-        async stat() {
-          return { size: Buffer.byteLength(content) }
-        },
-        async close() {
-          return undefined
-        },
-      }
-    },
-  }
-}
-
-function harness({ threshold = 1000, directory = "/repo", documentPath = "/tmp/handoff.md", document = "# Handoff\n", files, waitTimeout, waitInterval, storage: stored = [] } = {}) {
+function harness({ threshold = 1000, storage: stored = [] } = {}) {
   const calls = { synthetic: [], create: [], prompt: [], storage: [] }
   const monitor = createMonitor({
     threshold,
-    directory,
-    documentPath: () => documentPath,
-    fs: fakeFs(files ?? { [documentPath]: document }),
-    waitTimeout,
-    waitInterval,
     log: () => {},
     session: {
-      get: async ({ sessionID }) => ({
-        data: { id: sessionID, agent: "coder", model: { id: "fake-model", providerID: "example", variant: "high" }, location: { directory } },
-      }),
       synthetic: async (input) => {
         calls.synthetic.push(input)
         return { data: { id: "msg_1" } }
@@ -102,6 +58,10 @@ function harness({ threshold = 1000, directory = "/repo", documentPath = "/tmp/h
     },
   })
   return { monitor, calls, stored: () => stored }
+}
+
+function overThresholdEvent() {
+  return requestEvent({ messages: [textMessage("z".repeat(40_000))] })
 }
 
 test("estimates text at four characters per token", () => {
@@ -146,130 +106,99 @@ test("stays below the threshold while the request is small", () => {
   assert.equal(monitor.state.status, "watching")
 })
 
-test("asks the current agent to use the handoff skill once over the threshold", async () => {
+test("asks the current agent to do a handoff once over the threshold", async () => {
   const { monitor, calls } = harness()
-  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
+  const event = overThresholdEvent()
   assert.equal(check(monitor, event), "over")
   await monitor.start(event)
-  assert.equal(monitor.state.status, "writing")
+  assert.equal(monitor.state.status, "done")
   assert.equal(calls.synthetic.length, 1)
   const steer = calls.synthetic[0]
   assert.equal(steer.sessionID, "ses_test")
   assert.match(steer.text, /handoff skill/)
-  assert.match(steer.text, /document-only mode/)
-  assert.match(steer.text, /\/tmp\/handoff\.md/)
-  assert.match(steer.text, /Do not create or spawn a session/)
+  assert.match(steer.text, /do a handoff/)
   assert.match(steer.text, /no new direction from the user/)
-})
-
-test("skips sessions that were already handed off", async () => {
-  const { monitor, calls } = harness({ storage: [{ sessionID: "ses_test", successorID: "ses_old" }] })
-  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
-  check(monitor, event)
-  await monitor.start(event)
-  assert.equal(monitor.state.status, "handled")
-  assert.equal(calls.synthetic.length, 0)
-  assert.equal(calls.create.length, 0)
-})
-
-test("creates the successor with the same agent, model, and directory, then prompts it", async () => {
-  const document = "# Handoff: widget-api\n\n## Next actions\n1. run the tests\n"
-  const { monitor, calls } = harness({ document })
-  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
-  check(monitor, event)
-  await monitor.start(event)
-  await monitor.complete()
-  assert.equal(calls.create.length, 1)
-  assert.deepEqual(calls.create[0], {
-    title: "Handoff: ses_test",
-    location: { directory: "/repo" },
-    agent: "coder",
-    model: { providerID: "example", id: "fake-model", variant: "high" },
-  })
-  assert.deepEqual(calls.prompt, [{ sessionID: "ses_next", text: document }])
-  assert.equal(monitor.state.status, "done")
-})
-
-test("asks the old session to open the tmux pane for the successor", async () => {
-  const { monitor, calls } = harness()
-  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
-  check(monitor, event)
-  await monitor.start(event)
-  await monitor.complete()
-  const pane = calls.synthetic.at(-1)
-  assert.equal(pane.sessionID, "ses_test")
-  assert.match(pane.text, /tmux split-window -h -c \/repo -t "\$TMUX_PANE" opencode --session ses_next/)
-  assert.match(pane.text, /Do not continue the task in this session/)
-})
-
-test("the pane steer covers clients without tmux", () => {
-  const text = paneInstruction({ sessionID: "ses_next", directory: "/repo", documentPath: "/tmp/d.md" })
-  assert.match(text, /Inside tmux \(\$\{TMUX:-\} is set\)/)
-  assert.match(text, /Outside tmux/)
-  assert.match(text, /OpenChamber/)
-  assert.match(text, /run no tmux command/)
-})
-
-test("remembers the handoff so it never fires twice", async () => {
-  const { monitor, calls } = harness()
-  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
-  check(monitor, event)
-  await monitor.start(event)
-  await monitor.complete()
-  assert.equal(calls.storage[0][0], "handoffs")
-  assert.equal(calls.storage[0][1][0].sessionID, "ses_test")
-  assert.equal(calls.storage[0][1][0].successorID, "ses_next")
-  // A later request for the same session is ignored by the registry.
-  assert.equal(check(monitor, requestEvent({ messages: [textMessage("q")] })), "skip")
-})
-
-test("creates only one successor when events stack during the document wait", async () => {
-  const { monitor, calls } = harness({ waitInterval: 5 })
-  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
-  check(monitor, event)
-  await monitor.start(event)
-  // The event stream fires complete() unawaited for every event; before the
-  // single-flight guard, every concurrent caller created its own successor.
-  await Promise.all(Array.from({ length: 50 }, () => monitor.complete()))
-  assert.equal(calls.create.length, 1)
-  assert.equal(calls.prompt.length, 1)
-  assert.equal(monitor.state.status, "done")
-})
-
-test("leaves the session alone when no document appears", async () => {
-  const { monitor, calls } = harness({ documentPath: "/tmp/missing.md", files: {}, waitTimeout: 0, waitInterval: 1 })
-  const event = requestEvent({ messages: [textMessage("z".repeat(40_000))] })
-  check(monitor, event)
-  await monitor.start(event)
-  await monitor.complete()
-  assert.equal(monitor.state.status, "idle")
+  assert.match(steer.text, /Then stop/)
+  // The plugin steers only; it names no document path and spawns nothing.
+  assert.ok(!steer.text.includes("/tmp/"))
   assert.equal(calls.create.length, 0)
   assert.equal(calls.prompt.length, 0)
 })
 
-test("quotes directories with spaces for the tmux command", () => {
-  assert.equal(shellQuote("/repo"), "/repo")
-  assert.equal(shellQuote("/Users/me/My Repo"), "'/Users/me/My Repo'")
-  assert.equal(shellQuote(""), "''")
+test("steers at most once per session", async () => {
+  const { monitor, calls } = harness()
+  const event = overThresholdEvent()
+  check(monitor, event)
+  await monitor.start(event)
+  assert.equal(check(monitor, overThresholdEvent()), "skip")
+  await monitor.ask()
+  assert.equal(calls.synthetic.length, 1)
+})
+
+test("skips sessions that were already handed off", async () => {
+  const { monitor, calls } = harness({ storage: [{ sessionID: "ses_test", tokens: 251_000 }] })
+  const event = overThresholdEvent()
+  check(monitor, event)
+  await monitor.start(event)
+  assert.equal(monitor.state.status, "handled")
+  assert.equal(calls.synthetic.length, 0)
+  assert.equal(calls.storage.length, 0)
+})
+
+test("remembers the steer so a restart cannot fire it twice", async () => {
+  const { monitor, calls, stored } = harness()
+  const event = overThresholdEvent()
+  check(monitor, event)
+  await monitor.start(event)
+  assert.equal(calls.storage[0][0], "handoffs")
+  assert.equal(calls.storage[0][1][0].sessionID, "ses_test")
+  assert.ok(calls.storage[0][1][0].tokens > 1000)
+  // A fresh monitor for the same session sees the registry entry.
+  const next = harness({ storage: stored() })
+  const again = overThresholdEvent()
+  check(next.monitor, again)
+  await next.monitor.start(again)
+  assert.equal(next.monitor.state.status, "handled")
+  assert.equal(next.calls.synthetic.length, 0)
+})
+
+test("still records the steer when storage write fails", async () => {
+  const calls = { synthetic: [], storage: [] }
+  const monitor = createMonitor({
+    threshold: 1000,
+    log: () => {},
+    session: {
+      synthetic: async (input) => {
+        calls.synthetic.push(input)
+        return { data: { id: "msg_1" } }
+      },
+    },
+    storage: {
+      get: async () => [],
+      set: async () => {
+        throw new Error("disk full")
+      },
+      scan: async () => ({ items: [] }),
+    },
+  })
+  const event = overThresholdEvent()
+  check(monitor, event)
+  await monitor.start(event)
+  assert.equal(calls.synthetic.length, 1)
+  assert.equal(monitor.state.status, "done")
 })
 
 test("the steer instructs the agent to use the skill rather than restating the format", () => {
-  const text = handoffInstruction({ sessionID: "ses_x", threshold: 250000, tokens: 251234.5, documentPath: "/tmp/d.md" })
+  const text = handoffInstruction({ threshold: 250000, tokens: 251234.5 })
   assert.match(text, /251235 tokens/)
   assert.match(text, /handoff threshold 250000/)
   assert.ok(!text.includes("## Objective"))
+  assert.ok(!text.includes("tmux"))
 })
 
-test("pane steer names the document path and the new session", () => {
-  const text = paneInstruction({ sessionID: "ses_next", directory: "/repo", documentPath: "/tmp/d.md" })
-  assert.match(text, /ses_next/)
-  assert.match(text, /\/tmp\/d\.md/)
-})
-
-test("registers only the context hook", async () => {
+test("registers only the context hook and never subscribes to events", async () => {
   const registrations = []
   const ctx = {
-    location: { directory: "/repo" },
     options: {},
     session: {
       hook: async (name, callback) => {
@@ -278,7 +207,6 @@ test("registers only the context hook", async () => {
       },
     },
     storage: { get: async () => undefined, set: async () => {}, scan: async () => ({ items: [] }) },
-    event: { subscribe: () => ({ [Symbol.asyncIterator]: async function* () {} }) },
   }
   await AutoHandoffPlugin.setup(ctx)
   assert.deepEqual(registrations, ["context"])

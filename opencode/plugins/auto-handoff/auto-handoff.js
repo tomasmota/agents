@@ -2,25 +2,20 @@
 //
 // Long sessions get expensive and the model gets less reliable as the context
 // grows. This plugin watches each session's real request size and, once it
-// crosses a threshold, asks the *current* agent to write a handoff document with
-// the existing `handoff` skill, then starts a fresh session whose first prompt
-// is that document. The successor continues the same work: an automatic handoff
-// carries no new direction from the user, because the user is not there to give
-// any.
+// crosses a threshold, asks the *current* agent to do a handoff with the
+// existing `handoff` skill. The skill owns every mechanic — the document, model
+// resolution, session creation, pane attach — and the plugin owns only the
+// measurement and the trigger. An automatic handoff carries no new direction
+// from the user, because the user is not there to give any.
 //
 // Sequence:
 //   1. the "context" model-request hook measures system + tools + messages
-//   2. over threshold -> one steer: "use the handoff skill, write the document
-//      to <path>, document-only mode, then stop and wait"
-//   3. when that session goes idle, the plugin reads the document
-//   4. a new session is created in the same directory with the same agent and
-//      model, and the document is submitted as its first prompt
-//   5. the old session is told to run the tmux split that attaches the new
-//      session to a pane, then to stop
+//   2. over threshold -> one steer: "do a handoff with the handoff skill,
+//      continuing this same work, then stop"
 //
-// The document is written in a temp directory, never in the worktree, and stays
-// on disk as a fallback. Nothing is lost if a step fails: the old session keeps
-// working and the document is still readable.
+// The plugin never creates a session, submits a prompt, or touches tmux. Each
+// session is steered at most once, recorded in plugin storage, so a server
+// restart cannot cause a second steer.
 //
 // The size is an estimate of the assembled request (OpenCode estimates prompt
 // text at about four characters per token, with flat estimates for media), not
@@ -33,19 +28,10 @@
 
 import { Plugin } from "@opencode/plugin"
 
-import { open } from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
-
 const DEFAULT_THRESHOLD = 250_000
 const CHARS_PER_TOKEN = 4
 const IMAGE_TOKENS = 1_500
 const PDF_TOKENS = 2_000
-const CHUNK_BYTES = 65_536
-/** A handoff document is prose; anything larger is not one, and the read stays bounded. */
-const MAX_DOCUMENT_BYTES = 1_000_000
-const FILE_WAIT_MS = 300_000
-const FILE_POLL_MS = 2_000
 
 function recordOf(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
@@ -118,45 +104,18 @@ export function thresholdOf(options = {}, env = process.env) {
 }
 
 // The steer the current agent receives. It points at the user's own skill
-// instead of restating the document format, and forbids spawning anything: the
-// plugin owns session creation and the tmux pane.
-export function handoffInstruction({ sessionID, threshold, tokens, documentPath }) {
+// instead of restating any mechanics: the skill decides the document path, the
+// model, how the next session is created, and how the user is attached to it.
+export function handoffInstruction({ threshold, tokens }) {
   return [
     `Context for this session has reached ${Math.round(tokens)} tokens (handoff threshold ${threshold}).`,
-    "Stop working on the task and use the handoff skill in document-only mode: write the handoff document and nothing else.",
-    `Write it to exactly ${documentPath}.`,
+    "Stop working on the task and do a handoff with the handoff skill now: write the handoff document and spawn the next session with it as the first prompt, following that skill in full.",
     "The handoff continues this same work with no new direction from the user: record the current state, decisions, and next actions so a fresh agent can continue.",
-    "Do not create or spawn a session, do not touch tmux, and do not write the document anywhere else.",
-    "Then stop and wait. Do not continue the task in this session.",
+    "Then stop. Do not continue the task in this session.",
   ].join("\n")
-}
-
-export function paneInstruction({ sessionID, directory, documentPath }) {
-  const pane = `tmux split-window -h -c ${shellQuote(directory)} -t "$TMUX_PANE" opencode --session ${sessionID}`
-  return [
-    `The handoff document is at ${documentPath} and a new session (${sessionID}) has been created with it as its first prompt. It is already running.`,
-    "Attach the user to it the way this client supports, then stop:",
-    `- Inside tmux (\${TMUX:-} is set), run exactly: ${pane}`,
-    "- Outside tmux, for example in OpenChamber or a plain terminal, run no tmux command: the new session already exists and is listed in this client. Report its ID and the document path instead.",
-    "Do not continue the task in this session.",
-  ].join("\n")
-}
-
-function shellQuote(value) {
-  const raw = String(value ?? "")
-  if (raw && /^[A-Za-z0-9_@%+=:,./-]+$/.test(raw)) return raw
-  return `'${raw.replaceAll("'", `'\\''`)}'`
 }
 
 const KEY = "handoffs"
-
-function refOf(model) {
-  const ref = recordOf(model)
-  if (!ref || typeof ref.providerID !== "string" || typeof ref.id !== "string") return undefined
-  return typeof ref.variant === "string" && ref.variant !== ""
-    ? { providerID: ref.providerID, id: ref.id, variant: ref.variant }
-    : { providerID: ref.providerID, id: ref.id }
-}
 
 const monitors = new Map()
 
@@ -178,25 +137,14 @@ export function check(monitor, event) {
 export function createMonitor(config) {
   const state = {
     status: "watching",
-    completing: false,
     tokens: 0,
     sessionID: undefined,
-    directory: undefined,
-    documentPath: undefined,
-    successorID: undefined,
     error: undefined,
   }
   const monitor = { config, threshold: config.threshold, state }
 
   function log(...args) {
     if (typeof config.log === "function") config.log(...args)
-  }
-
-  function fail(error) {
-    const message = String(recordOf(error)?.message ?? error).slice(0, 300)
-    state.status = "failed"
-    state.error = message
-    log("auto-handoff failed:", message)
   }
 
   async function remember(entry) {
@@ -218,85 +166,17 @@ export function createMonitor(config) {
     }
   }
 
-  async function info(sessionID) {
-    const result = await config.session.get({ sessionID })
-    return recordOf(recordOf(result)?.data ?? result)
-  }
-
   async function ask() {
     if (state.status !== "requested") return
-    const { sessionID, documentPath } = state
+    const { sessionID } = state
     if (await isHandled(sessionID)) {
       log(`auto-handoff: ${sessionID} already handed off`)
       return
     }
-    state.status = "writing"
-    const text = handoffInstruction({ sessionID, threshold: monitor.threshold, tokens: state.tokens, documentPath })
+    const text = handoffInstruction({ threshold: monitor.threshold, tokens: state.tokens })
     await config.session.synthetic({ sessionID, text, description: "auto-handoff" })
-  }
-
-  async function readDocument(pathname) {
-    const handle = await config.fs.open(pathname, "r")
-    try {
-      const chunks = []
-      let size = 0
-      while (size < MAX_DOCUMENT_BYTES) {
-        const buffer = Buffer.alloc(Math.min(CHUNK_BYTES, MAX_DOCUMENT_BYTES - size))
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null)
-        if (!Number.isFinite(bytesRead) || bytesRead <= 0) break
-        chunks.push(Buffer.from(buffer.subarray(0, bytesRead)))
-        size += bytesRead
-      }
-      return Buffer.concat(chunks).toString("utf8")
-    } finally {
-      await handle.close()
-    }
-  }
-
-  // Runs when the old session goes idle: the document should exist by then.
-  // Single-flight: the event stream invokes this unawaited for every event,
-  // and concurrent callers would each pass the status check before the first
-  // await and create their own successor session. Every exit path below sets
-  // a terminal status, so the flag never needs clearing.
-  async function complete() {
-    if (state.status !== "writing" || state.completing) return
-    state.completing = true
-    const ready = await waitForDocument(state.documentPath, config.fs, {
-      timeout: config.waitTimeout,
-      interval: config.waitInterval,
-    })
-    if (ready !== true) {
-      log(`auto-handoff: no document at ${state.documentPath}; leaving ${state.sessionID} alone`)
-      state.status = "idle"
-      return
-    }
-    const document = await readDocument(state.documentPath)
-    if (document.trim() === "") {
-      log(`auto-handoff: empty document at ${state.documentPath}; leaving ${state.sessionID} alone`)
-      state.status = "idle"
-      return
-    }
-    state.status = "starting"
-    const model = refOf(state.model)
-    const input = {
-      title: `Handoff: ${state.sessionID}`,
-      location: { directory: state.directory },
-      ...(state.agent ? { agent: state.agent } : {}),
-      ...(model ? { model } : {}),
-    }
-    const created = await config.session.create(input)
-    const successor = recordOf(recordOf(created)?.data ?? created)
-    const successorID = typeof successor?.id === "string" ? successor.id : undefined
-    if (!successorID) throw new Error("session.create returned no id")
-    state.successorID = successorID
-    await config.session.prompt({ sessionID: successorID, text: document })
-    await remember({ sessionID: state.sessionID, successorID, documentPath: state.documentPath, tokens: state.tokens })
+    await remember({ sessionID, tokens: state.tokens })
     state.status = "done"
-    await config.session.synthetic({
-      sessionID: state.sessionID,
-      text: paneInstruction({ sessionID: successorID, directory: state.directory, documentPath: state.documentPath }),
-      description: "auto-handoff",
-    })
   }
 
   async function start(event) {
@@ -307,92 +187,36 @@ export function createMonitor(config) {
       state.status = "handled"
       return
     }
-    const session = await info(request.sessionID)
-    state.agent = typeof session?.agent === "string" ? session.agent : undefined
-    state.model = session?.model
-    state.directory = typeof session?.location?.directory === "string" ? session.location.directory : config.directory
-    state.documentPath = config.documentPath(request.sessionID)
     await ask()
   }
 
-  async function dispose() {
+  function dispose() {
     monitors.delete(state.sessionID)
   }
 
-  return { check, start, complete, ask, dispose, state, threshold: monitor.threshold, isHandled, remember, readDocument, info }
-}
-
-// Waits for the document to appear and stop growing. Returns undefined on timeout.
-export async function waitForDocument(pathname, fs, options = {}) {
-  const timeout = options.timeout ?? FILE_WAIT_MS
-  const interval = options.interval ?? FILE_POLL_MS
-  const deadline = Date.now() + timeout
-  let previous = -1
-  while (Date.now() < deadline) {
-    const handle = await fs.open(pathname, "r").catch(() => undefined)
-    if (handle) {
-      let size = 0
-      try {
-        size = (await handle.stat()).size
-      } catch {
-        size = 0
-      } finally {
-        await handle.close().catch(() => {})
-      }
-      if (size > 0 && size === previous) return true
-      previous = size
-    }
-    await new Promise((resolve) => setTimeout(resolve, interval))
-  }
-  return undefined
-}
-
-function documentPathFor(sessionID) {
-  return path.join(os.tmpdir(), "opencode", `handoff-auto-${sessionID}.md`)
+  return { check, start, ask, dispose, state, threshold: monitor.threshold, isHandled, remember }
 }
 
 const testHelpers = {
   check,
   createMonitor,
-  documentPathFor,
   estimateContent,
   estimateText,
   handoffInstruction,
-  paneInstruction,
   requestTokens,
-  shellQuote,
   thresholdOf,
-  waitForDocument,
 }
 
 export const AutoHandoffPlugin = Plugin.define({
   id: "tomas.auto-handoff",
   async setup(ctx) {
     const threshold = thresholdOf(ctx.options)
-    const documentPath = (sessionID) => documentPathFor(sessionID)
-    const controller = new AbortController()
-    const loop = (async () => {
-      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-        const monitor = monitors.get(event?.data?.sessionID)
-        if (monitor === undefined) continue
-        // Never awaited here: waiting for a document must not stall the event
-        // stream for other sessions.
-        void monitor.complete().catch((error) => {
-          monitor.state.status = "failed"
-          monitor.state.error = String(error?.message ?? error).slice(0, 300)
-          console.error(`auto-handoff failed (${monitor.state.error})`)
-        })
-      }
-    })()
     await ctx.session.hook("context", async (event) => {
       if (monitors.has(event.sessionID)) return
       const monitor = createMonitor({
         threshold,
         session: ctx.session,
         storage: ctx.storage,
-        directory: ctx.location.directory,
-        documentPath,
-        fs: { open },
         log: (message, detail) => console.error(`auto-handoff: ${message}${detail ? ` ${detail}` : ""}`),
       })
       monitors.set(event.sessionID, monitor)
@@ -406,8 +230,6 @@ export const AutoHandoffPlugin = Plugin.define({
       }
     })
     return async () => {
-      controller.abort()
-      await loop.catch(() => {})
       monitors.clear()
     }
   },
