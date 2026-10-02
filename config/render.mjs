@@ -167,7 +167,7 @@ export async function render(lock, adapter, root, source = SOURCE) {
 export async function apply(outputs, root, check = false) {
   await noSymlinks(root, "root-validation")
   const stale = []
-  const obsolete = []
+  const obsolete = new Set()
   for (const [path, content] of outputs) {
     await noSymlinks(root, path)
     if (!path.endsWith(".json")) continue
@@ -188,10 +188,10 @@ export async function apply(outputs, root, check = false) {
       })
       if (!bytes) continue
       if (hash(bytes) !== expected) throw new Error(`changed obsolete generated artifact; preserve and reconcile: ${old}`)
-      obsolete.push(old)
+      obsolete.add(old)
     }
   }
-  if (check && obsolete.length) throw new Error(`obsolete generated artifacts: ${obsolete.join(", ")}`)
+  if (check && obsolete.size) throw new Error(`obsolete generated artifacts: ${[...obsolete].join(", ")}`)
   if (!check) for (const path of obsolete) await rm(safePath(root, path))
   for (const [path, content] of outputs) {
     const target = safePath(root, path)
