@@ -94,6 +94,15 @@ test("validates LLM fallback decisions", () => {
   assert.throws(() => parseFallbackModels("invalid"), /Invalid fallback model/)
 })
 
+test("the shared default fallback order is Luna then Inco GLM flash, with the colon kept in the model ID", () => {
+  const expected = [
+    { providerID: "openai", modelID: "gpt-5.6-luna" },
+    { providerID: "inco", modelID: "glm-5.3-flash:fast" },
+  ]
+  assert.deepEqual(parseFallbackModels(undefined), expected)
+  assert.deepEqual(parseFallbackModels(""), expected)
+})
+
 function harness(generate = { text: async () => { throw new Error("fallback should not run") } }) {
   let evaluate
   const context = {

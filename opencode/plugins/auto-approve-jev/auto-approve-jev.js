@@ -8,7 +8,7 @@
 //   OPENCODE_JEV_BLAST_MIN=2.5               deny threshold for blast-radius score
 //   OPENCODE_JEV_PURPOSE_MAX=0.4             maximum legitimate-purpose probability for deny
 //   OPENCODE_JEV_CONFIDENCE_MIN=0.5          minimum Score confidence for deny
-//   OPENCODE_JEV_FALLBACK_MODELS="openai/gpt-5.6-luna,zai-coding-plan/glm-5.3-flash"
+//   OPENCODE_JEV_FALLBACK_MODELS=...         default "openai/gpt-5.6-luna,inco/glm-5.3-flash:fast"; do not set per platform
 //   OPENCODE_JEV_FALLBACK_TIMEOUT_MS=15000   timeout per fallback model
 //   OPENCODE_JEV_ON_EXHAUSTION=allow         allow|manual|deny
 //   OPENCODE_JEV_DEBUG=1                     opt in to 30-day private audit; unset/0 disables, or use an absolute .jsonl base path
@@ -244,8 +244,12 @@ function errorText(error) {
   }
 }
 
+// Shared by every platform; consumers do not override it. A colon is part of
+// the literal model ID, so only the first slash separates the provider.
+const DEFAULT_FALLBACK_MODELS = "openai/gpt-5.6-luna,inco/glm-5.3-flash:fast"
+
 function parseFallbackModels(raw) {
-  const value = raw || "openai/gpt-5.6-luna,zai-coding-plan/glm-5.3-flash"
+  const value = raw || DEFAULT_FALLBACK_MODELS
   return value.split(",").map((entry) => {
     const [providerID, ...rest] = entry.trim().split("/")
     const modelID = rest.join("/")
