@@ -191,3 +191,37 @@ test("garbage verdicts rename nothing", async () => {
   await retitler.evaluate("ses_1")
   assert.ok(!calls.some(([name]) => name === "update"))
 })
+
+test("a manual rename during the judge cannot be overwritten", async () => {
+  const { retitler, calls } = harness({ verdict: '{"needs_update":true,"title":"Other task"}' })
+  // Baseline established, then the judge is deliberately suspended.
+  retitler.renamed("ses_1", "Fix login bug")
+  let release
+  const slow = createRetitler({ config: baseConfig, session: {
+    get: async () => ({ title: "Fix login bug" }),
+    context: async () => [userMessage("m1", "change focus")],
+    update: async () => calls.push(["unexpected-update"]),
+  }, generate: () => new Promise((resolve) => { release = resolve }) })
+  const pending = slow.evaluate("ses_1")
+  while (!release) await Promise.resolve()
+  slow.renamed("ses_1", "My manual title")
+  release({ text: '{"needs_update":true,"title":"Other task"}' })
+  await pending
+  assert.ok(!calls.some(([name]) => name.includes("update")))
+})
+
+test("unload while the judge is pending cannot rename", async () => {
+  let release
+  let updates = 0
+  const retitler = createRetitler({ config: baseConfig, session: {
+    get: async () => ({ title: "Original" }),
+    context: async () => [userMessage("m1", "new topic")],
+    update: async () => updates++,
+  }, generate: () => new Promise((resolve) => { release = resolve }) })
+  const pending = retitler.evaluate("ses_1")
+  while (!release) await Promise.resolve()
+  retitler.dispose()
+  release({ text: '{"needs_update":true,"title":"New topic"}' })
+  await pending
+  assert.equal(updates, 0)
+})

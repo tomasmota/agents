@@ -8,14 +8,18 @@
 // measurement and the trigger. An automatic handoff carries no new direction
 // from the user, because the user is not there to give any.
 //
-// Sequence:
+// Sequence, repeated on every model request of every session:
 //   1. the "context" model-request hook measures system + tools + messages
-//   2. over threshold -> one steer: "do a handoff with the handoff skill,
-//      continuing this same work, then stop"
+//   2. still below threshold -> remember the size and wait for the next request
+//      (a session that starts small only crosses later, so the watch never ends
+//      after the first request)
+//   3. over threshold -> reserve one durable record for the session, then one
+//      steer: "do a handoff with the handoff skill, continuing this same work,
+//      then stop"
 //
 // The plugin never creates a session, submits a prompt, or touches tmux. Each
-// session is steered at most once, recorded in plugin storage, so a server
-// restart cannot cause a second steer.
+// session is reserved before steering. This guards concurrent requests within
+// this instance and reloads with working storage; it is not a distributed lock.
 //
 // The size is an estimate of the assembled request (OpenCode estimates prompt
 // text at about four characters per token, with flat estimates for media), not
@@ -115,9 +119,31 @@ export function handoffInstruction({ threshold, tokens }) {
   ].join("\n")
 }
 
-const KEY = "handoffs"
+// Durable state, one record per session, keyed by the session itself.
+//
+// The key's presence is the whole dedupe check, so it needs exactly one read
+// and no reconstruction: no scan to read with the wrong shape, no capped list
+// that eventually forgets an old session and re-steers it, and no
+// read-modify-write window in which one session's write drops another's.
+const RECORD_PREFIX = "handoff/"
 
-const monitors = new Map()
+// Older versions kept every handed-off session in one capped array under this
+// key, and the cap did drop old entries. It is still read, so upgrading cannot
+// re-steer a session that was already handed off; it is never written, rewritten
+// or deleted again, so there is no migration to undo.
+const LEGACY_KEY = "handoffs"
+
+function recordKey(sessionID) {
+  return `${RECORD_PREFIX}${sessionID}`
+}
+
+// A key that exists means this session was already steered. Absence is
+// `undefined`, per the `Json | undefined` read contract, so anything else
+// counts as stored: wrongly believing a session was steered costs one handoff,
+// wrongly believing it was not re-steers a session that already handed off.
+function recorded(value) {
+  return value !== undefined
+}
 
 // One threshold decision per model request. Returns what the monitor did, so
 // tests can assert on it without a server.
@@ -125,12 +151,12 @@ export function check(monitor, event) {
   const request = recordOf(event)
   if (!monitor || monitor.state.status !== "watching") return "skip"
   const tokens = requestTokens(request)
-  if (tokens < monitor.threshold) {
-    monitor.state.tokens = tokens
-    return "below"
-  }
-  monitor.state.status = "requested"
   monitor.state.tokens = tokens
+  // The status flips synchronously, before this returns and before any caller
+  // awaits, so a request that arrives while the steer is still in flight is
+  // already "skip".
+  if (tokens < monitor.threshold) return "below"
+  monitor.state.status = "requested"
   return "over"
 }
 
@@ -147,54 +173,90 @@ export function createMonitor(config) {
     if (typeof config.log === "function") config.log(...args)
   }
 
-  async function remember(entry) {
-    try {
-      const page = await config.storage.scan({ prefix: KEY, limit: 100 })
-      const kept = [entry, ...(page?.items ?? []).filter((item) => recordOf(item)?.sessionID !== entry.sessionID)].slice(0, 100)
-      await config.storage.set(KEY, kept)
-    } catch (error) {
-      log("auto-handoff could not record handoff:", String(recordOf(error)?.message ?? error).slice(0, 200))
-    }
+  function timestamp() {
+    return typeof config.now === "function" ? config.now() : new Date().toISOString()
   }
 
-  async function isHandled(sessionID) {
+  const active = () => state.status !== "disposed" && (config.active?.() ?? true)
+
+  // Reserve before attempting the steer. A crash between these two operations
+  // can lose a steer, deliberately preferring that to a duplicate successor.
+  async function remember(entry) {
     try {
-      const stored = await config.storage.get(KEY)
-      return Array.isArray(stored) && stored.some((item) => recordOf(item)?.sessionID === sessionID)
-    } catch {
+      await config.storage.set(recordKey(entry.sessionID), {
+        sessionID: entry.sessionID,
+        tokens: entry.tokens,
+        at: timestamp(),
+      })
+      return true
+    } catch (error) {
+      log("could not record handoff:", String(recordOf(error)?.message ?? error).slice(0, 200))
       return false
     }
   }
 
-  async function ask() {
-    if (state.status !== "requested") return
-    const { sessionID } = state
-    if (await isHandled(sessionID)) {
-      log(`auto-handoff: ${sessionID} already handed off`)
-      return
+  async function legacySessions() {
+    try {
+      const list = await config.storage.get(LEGACY_KEY)
+      if (!Array.isArray(list)) return new Set()
+      return new Set(list.map((item) => recordOf(item)?.sessionID).filter((id) => typeof id === "string" && id !== ""))
+    } catch {
+      return new Set()
     }
-    const text = handoffInstruction({ threshold: monitor.threshold, tokens: state.tokens })
-    await config.session.synthetic({ sessionID, text, description: "auto-handoff" })
-    await remember({ sessionID, tokens: state.tokens })
-    state.status = "done"
   }
 
-  async function start(event) {
+  async function isHandled(sessionID) {
+    if (typeof sessionID !== "string" || sessionID === "") return false
+    if ((await legacySessions()).has(sessionID)) return true
+    try {
+      return recorded(await config.storage.get(recordKey(sessionID)))
+    } catch {
+      // Best effort: a read outage can prevent restart deduplication.
+      return false
+    }
+  }
+
+  // Runs at most once per monitor, before any measurement. A session that
+  // already has a record is parked instead of being steered again later.
+  let admitted = null
+  function admit(event) {
     const request = recordOf(event)
-    state.sessionID = request.sessionID
-    if (await isHandled(request.sessionID)) {
-      log(`auto-handoff: ${request.sessionID} already handed off`)
-      state.status = "handled"
-      return
-    }
-    await ask()
+    if (typeof request?.sessionID === "string") state.sessionID = request.sessionID
+    admitted ??= isHandled(state.sessionID).then((handled) => {
+      if (handled && active()) {
+        log(`${state.sessionID} already handed off`)
+        state.status = "handled"
+      }
+      return handled
+    })
+    return admitted
   }
 
-  function dispose() {
-    monitors.delete(state.sessionID)
+  // Every request is measured, not just the first one: a session that starts
+  // small only crosses the threshold several turns later.
+  async function observe(event) {
+    await admit(event)
+    if (!active()) return "skip"
+    return check(monitor, event)
   }
 
-  return { check, start, ask, dispose, state, threshold: monitor.threshold, isHandled, remember }
+  async function trigger() {
+    if (!active() || state.status !== "requested") return "skip"
+    state.status = "reserving"
+    const { sessionID, tokens } = state
+    await remember({ sessionID, tokens })
+    if (!active()) return "skip"
+    await config.session.synthetic({
+      sessionID,
+      text: handoffInstruction({ threshold: monitor.threshold, tokens }),
+      description: "auto-handoff",
+    })
+    if (active()) state.status = "done"
+    return "done"
+  }
+
+  const dispose = () => { state.status = "disposed" }
+  return { observe, admit, check, trigger, dispose, isHandled, remember, state, threshold: monitor.threshold }
 }
 
 const testHelpers = {
@@ -203,34 +265,51 @@ const testHelpers = {
   estimateContent,
   estimateText,
   handoffInstruction,
+  recordKey,
   requestTokens,
   thresholdOf,
+  LEGACY_KEY,
+  RECORD_PREFIX,
 }
 
 export const AutoHandoffPlugin = Plugin.define({
   id: "tomas.auto-handoff",
   async setup(ctx) {
+    // Plugin setup is location-scoped. Never share another location's monitor,
+    // session client, threshold, or cleanup through a module-global map.
+    const monitors = new Map()
+    let active = true
     const threshold = thresholdOf(ctx.options)
-    await ctx.session.hook("context", async (event) => {
-      if (monitors.has(event.sessionID)) return
-      const monitor = createMonitor({
-        threshold,
-        session: ctx.session,
-        storage: ctx.storage,
-        log: (message, detail) => console.error(`auto-handoff: ${message}${detail ? ` ${detail}` : ""}`),
-      })
-      monitors.set(event.sessionID, monitor)
-      if (check(monitor, event) !== "over") return
+    const log = (message, detail) => console.error(`auto-handoff: ${message}${detail ? ` ${detail}` : ""}`)
+    const registration = await ctx.session.hook("context", async (event) => {
+      if (!active) return
+      const sessionID = recordOf(event)?.sessionID
+      if (typeof sessionID !== "string" || sessionID === "") return
+      // Created on the session's first request, then reused: a monitor is never
+      // treated as a reason to stop watching the session.
+      let monitor = monitors.get(sessionID)
+      if (!monitor) {
+        monitor = createMonitor({ threshold, session: ctx.session, storage: ctx.storage, log, active: () => active })
+        monitors.set(sessionID, monitor)
+      }
+      if ((await monitor.observe(event)) !== "over") return
       try {
-        await monitor.start(event)
+        await monitor.trigger()
       } catch (error) {
+        if (!active) return
         monitor.state.status = "failed"
-        monitor.state.error = String(error?.message ?? error).slice(0, 300)
-        console.error(`auto-handoff failed (${monitor.state.error})`)
+        monitor.state.error = String(recordOf(error)?.message ?? error).slice(0, 300)
+        log(`failed (${monitor.state.error})`)
       }
     })
     return async () => {
+      // Drop the in-memory monitors and unregister the hook. The durable
+      // records are what survive, so a reload re-reads them rather than
+      // re-steering.
+      active = false
+      for (const monitor of monitors.values()) monitor.dispose()
       monitors.clear()
+      await registration?.dispose?.()
     }
   },
 })

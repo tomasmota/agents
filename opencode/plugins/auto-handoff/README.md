@@ -17,8 +17,10 @@ the user is not there to give any.
 The plugin deliberately does no more than that. It never creates a session,
 submits a prompt, or touches tmux: the `handoff` skill is the single source of
 truth for spawn mechanics, including model resolution through `model-selector`.
-Each session is steered at most once, recorded in plugin storage, so a server
-restart cannot cause a second steer.
+Every request is checked until the session is reserved for steering. Each attempt
+gets its own durable `handoff/<sessionID>` record **before** the steer, so later sessions do not
+overwrite its restart guard. Old entries in the legacy `handoffs` list are
+also honored; records that older versions already lost cannot be recovered.
 
 ## Threshold
 
@@ -62,6 +64,16 @@ opencode plugin update 'git+ssh://git@github.com/tomasmota/agents.git#main::path
 - The plugin steers once per session and cannot verify that the handoff
   happened. If the agent ignores the steer, the session continues unguarded;
   the next handoff has to be asked for manually.
+- The once-only guard is best effort when durable storage fails. A successful
+  steer is still suppressed in memory, but a restart cannot recover an entry
+  that could not be written. Storage records are local plugin state, not backup.
+- Reserving before steering prefers a missed handoff to a duplicate: a crash,
+  unload or failed synthetic submission after reservation leaves the guard in
+  place even if no steer arrived. Ask for a handoff manually in that case.
+- Monitors and cleanup are isolated per plugin/location instance. Unload prevents
+  new steers after pending storage reads/writes finish; a synthetic submission
+  already in flight cannot be retracted. Storage has no compare-and-set, so this
+  is not an exactly-once guarantee across overlapping instances or processes.
 
 ## Test
 
@@ -71,5 +83,6 @@ npm test
 ```
 
 Fixtures are fictional. Unit tests cover token estimation, the threshold
-decision, the steer text, the once-only guard, and storage-failure paths,
+decision, growing-session hooks, the steer text, concurrent once-only guards,
+restart persistence across multiple sessions, cleanup, and storage-failure paths,
 without making model requests.

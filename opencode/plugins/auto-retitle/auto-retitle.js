@@ -139,16 +139,17 @@ function parseJudgeResponse(text, currentTitle) {
   return { needs_update: true, title }
 }
 
-function createRetitler({ config, generate, session }) {
+function createRetitler({ config, generate, session, directory }) {
   const states = new Map()
   const inflight = new Map()
+  let disposed = false
 
   const stateOf = (sessionID) => {
     let state = states.get(sessionID)
     if (!state) {
       state = { adopted: false, lastKnown: undefined, pending: undefined, lastKey: undefined, optedOut: false }
       states.set(sessionID, state)
-      while (states.size > 256) states.delete(states.keys().next().value)
+      // Never evict a manual-rename opt-out while this instance is alive.
     }
     return state
   }
@@ -157,6 +158,7 @@ function createRetitler({ config, generate, session }) {
   // external title is adopted as OpenCode's initial auto-title baseline; any
   // later external change is a manual rename and opts the session out.
   function renamed(sessionID, title) {
+    if (disposed) return
     if (typeof sessionID !== "string" || typeof title !== "string") return
     const state = stateOf(sessionID)
     if (state.optedOut) return
@@ -177,6 +179,7 @@ function createRetitler({ config, generate, session }) {
   }
 
   async function evaluate(sessionID) {
+    if (disposed) return
     if (typeof sessionID !== "string" || sessionID === "") return
     if (inflight.has(sessionID)) return
     const work = run(sessionID).catch((error) => {
@@ -194,6 +197,7 @@ function createRetitler({ config, generate, session }) {
     const state = stateOf(sessionID)
     if (state.optedOut) return
     const info = await session.get({ sessionID })
+    if (disposed || info?.parentID || (directory && info?.location?.directory !== directory)) return
     const title = typeof info?.title === "string" ? info.title.trim() : ""
     if (!title) return
     // A title change we missed via events (e.g. plugin loaded late) follows
@@ -209,14 +213,20 @@ function createRetitler({ config, generate, session }) {
     state.lastKnown = title
     if (!state.adopted) state.adopted = true
     const messages = await session.context({ sessionID })
+    if (disposed || state.optedOut) return
     const excerpts = recentUserTexts(messages, config)
     if (excerpts.length === 0) return
     const key = `${title}\0${excerpts.map((entry) => entry.id ?? entry.text).join("\0")}`
     if (key === state.lastKey) return
     state.lastKey = key
     const response = await generate({ model: config.model, prompt: buildJudgePrompt(title, excerpts) })
+    if (disposed || state.optedOut) return
     const verdict = parseJudgeResponse(response?.text, title)
     if (!verdict?.needs_update) return
+    // A user can rename while the judge is awaiting I/O. Do not overwrite that
+    // edit even if its event has not reached this instance yet.
+    const latest = await session.get({ sessionID })
+    if (disposed || state.optedOut || latest?.title?.trim() !== title) return
     state.pending = verdict.title
     try {
       await session.update({ sessionID, title: verdict.title })
@@ -227,6 +237,7 @@ function createRetitler({ config, generate, session }) {
   }
 
   function dispose() {
+    disposed = true
     states.clear()
     inflight.clear()
   }
@@ -247,10 +258,18 @@ const testHelpers = {
 export const AutoRetitlePlugin = Plugin.define({
   id: "tomas.auto-retitle",
   async setup(ctx) {
+    const config = retitleConfig(ctx.options)
+    const list = await ctx.model.list()
+    const models = Array.isArray(list) ? list : list?.data ?? []
+    const judge = models.find((model) => model.providerID === config.model.providerID && model.id === config.model.id)
+    if (!judge || (config.model.variant && !(judge.variants ?? []).some((variant) => (variant.id ?? variant) === config.model.variant))) {
+      throw new Error("auto-retitle judge model/variant unavailable; no fallback is configured")
+    }
     const retitler = createRetitler({
-      config: retitleConfig(ctx.options),
+      config,
       generate: (input) => ctx.generate.text(input),
       session: ctx.session,
+      directory: ctx.location?.directory,
     })
     const controller = new AbortController()
     const loop = (async () => {
@@ -271,9 +290,9 @@ export const AutoRetitlePlugin = Plugin.define({
       }
     })
     return async () => {
+      retitler.dispose()
       controller.abort()
       await loop
-      retitler.dispose()
     }
   },
 })

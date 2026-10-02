@@ -1,0 +1,19 @@
+name: shared-agent-contract
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install locked test dependencies
+        run: |
+          for package in opencode/plugins/*; do
+            if test -f "$package/package-lock.json"; then
+              npm ci --prefix "$package" --ignore-scripts --no-audit --no-fund
+            fi
+          done
+      - run: node --test --test-timeout=30000 config/test/*.test.mjs opencode/plugins/*/test/*.test.mjs
+      - run: git diff --exit-code

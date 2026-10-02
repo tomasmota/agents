@@ -11,6 +11,6 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.21"
+    "@opencode/plugin": "2.0.16"
   }
 }
