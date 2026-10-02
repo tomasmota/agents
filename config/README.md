@@ -24,7 +24,7 @@ The generated inventory hashes every generated artifact; it is not a backup or
 runtime proof. `inventory.mjs` separates intended, installed and active evidence.
 It checks runtime versions, selected loaded-config settings, active pins and
 optional installed server/skill paths. Config documents are not per-request
-hook overrides; the actual executor is self-checked by child-policy at setup.
+hook overrides.
 `--runtime-only` uses the root-owned installed inventory, installed server and
 installed skills plus the live CLI/API, without requiring the editable source
 checkout's hashes. It explicitly reports intended artifact proof as not
@@ -35,8 +35,8 @@ review permission/client diffs, test, deploy, verify and push the consumer.
 
 Supported profiles: `mac`, `home-linux`, `coder`. Coder does not enable automatic
 handoff or tmux, and retains its root-owned deployment, lazy browser and explicit
-continuation policy. Child dispatch uses Space Bunny regardless of role primary
-model; see `../opencode/plugins/child-policy/README.md`.
+continuation policy. Role models are chosen per platform adapter; the central source
+renders them as given and does not impose a child model policy.
 
 CLI profiles require `opencode/lib/` and `opencode/subagents.jsonc` as siblings
 of the generated skills directory (under the same parent). The portable

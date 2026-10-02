@@ -101,14 +101,13 @@ export async function render(lock, adapter, root, source = SOURCE) {
     if (!Object.hasOwn(roles, id)) throw new Error(`unknown role: ${id}`)
     keys(selection, ["model", "mode"], `models.${id}`)
     if (!/^[^/]+\/.+/.test(selection.model) || !["all", "subagent"].includes(selection.mode)) throw new Error(`invalid selection for ${id}`)
-    if (selection.mode === "subagent" && selection.model !== "opencode/space-bunny-free") throw new Error(`subagent-only role ${id} must use Space Bunny without fallback/variant`)
     agents[id] = { ...roles[id], ...selection }
   }
   if (adapter.profile === "coder" && Object.values(adapter.models).some((selection) => selection.mode !== "subagent")) throw new Error("Coder shared roles must remain subagent-only")
   const pluginOptions = adapter.pluginOptions ?? {}
   for (const id of Object.keys(pluginOptions)) if (!profile.plugins.includes(id)) throw new Error(`unsupported plugin option: ${id}`)
   const optionKeys = { "agent-routes": ["routesFile", "stateFile", "quotaAdapter"], "auto-retitle": ["model", "maxMessages", "userChars"],
-    "auto-handoff": ["threshold"], "child-policy": ["maxConcurrent", "forceForeground"] }
+    "auto-handoff": ["threshold"] }
   for (const [id, options] of Object.entries(pluginOptions)) keys(options, optionKeys[id] ?? [], `pluginOptions.${id}`)
   const plugins = []
   for (const id of profile.plugins) {
@@ -116,7 +115,7 @@ export async function render(lock, adapter, root, source = SOURCE) {
     const info = await readJSON(join(source, pkg.path, "package.json"))
     await readFile(join(source, pkg.path, info.main))
     const spec = `git+ssh://git@github.com/tomasmota/agents.git#${lock.revision}::path:${pkg.path}`
-    const options = pluginOptions[id] ?? (id === "auto-handoff" ? { threshold: 250000 } : id === "auto-retitle" ? { model: "openai/gpt-6-luna#low" } : id === "child-policy" ? { maxConcurrent: adapter.profile === "coder" ? 2 : 4, forceForeground: adapter.profile === "coder" } : undefined)
+    const options = pluginOptions[id] ?? (id === "auto-handoff" ? { threshold: 250000 } : id === "auto-retitle" ? { model: "openai/gpt-6-luna#low" } : undefined)
     plugins.push(options ? { package: spec, options } : spec)
   }
   const server = { ...base, websearch: { provider: "exa" }, tool_output: { max_lines: 500, max_bytes: 16000 },

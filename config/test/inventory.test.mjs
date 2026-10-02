@@ -12,7 +12,7 @@ test("real 2.0.16 API shapes, active version/settings/pins and secret-safe allow
   await writeFile(join(root, "platform.json"), JSON.stringify({ permissions: [], experimental: { subagent_depth: 2 } }))
   await writeFile(join(root, "platform.md"), "Fictional platform")
   const lock = { schemaVersion: 1, revision: "a".repeat(40), pluginApi: "2.0", opencode: "2.0.16" }
-  const adapter = { profile: "coder", server: "platform.json", instructions: "platform.md", models: { general: { mode: "subagent", model: "opencode/space-bunny-free" } }, outputs: { server: "out/server.json", routes: "out/routes.json", instructions: "out/AGENTS.md", inventory: "out/inventory.json", skills: "out/skills" } }
+  const adapter = { profile: "coder", server: "platform.json", instructions: "platform.md", models: { general: { mode: "subagent", model: "example/fast" } }, outputs: { server: "out/server.json", routes: "out/routes.json", instructions: "out/AGENTS.md", inventory: "out/inventory.json", skills: "out/skills" } }
   const outputs = await render(lock, adapter, root); await apply(outputs, root)
   const inventory = JSON.parse(outputs.get("out/inventory.json"))
   const config = JSON.parse(outputs.get("out/server.json"))

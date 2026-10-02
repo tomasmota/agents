@@ -14,8 +14,8 @@ async function fixture(t, profile = "coder") {
   await writeFile(join(root, "platform.md"), "Platform identity and boundaries.\n")
   if (profile !== "coder") await writeFile(join(root, "cli.json"), JSON.stringify({ tabs: { mode: "off" } }))
   const adapter = { profile, server: "platform.json", instructions: "platform.md", models: {
-    general: { mode: profile === "coder" ? "subagent" : "all", model: profile === "coder" ? "opencode/space-bunny-free" : "example/primary#high" },
-    explore: { mode: "subagent", model: "opencode/space-bunny-free" },
+    general: { mode: profile === "coder" ? "subagent" : "all", model: "example/primary#high" },
+    explore: { mode: "subagent", model: "example/fast" },
   }, outputs: { server: "out/server.json", routes: "out/opencode/subagents.jsonc", instructions: "out/AGENTS.md", inventory: "out/inventory.json", skills: "out/skills", helpers: "out/opencode/lib", cli: "out/cli.json" },
     ...(profile !== "coder" ? { cli: "cli.json" } : {}) }
   return { root, adapter }
@@ -49,7 +49,7 @@ test("unknown inputs, moving refs, paid child profiles, version drift and unsafe
   await assert.rejects(render({ ...lock, opencode: "99.0.0" }, adapter, root), /unsupported/)
   await assert.rejects(render(lock, { ...adapter, unexpected: true }, root), /unknown field/)
   await assert.rejects(render(lock, { ...adapter, profile: "unknown" }, root), /unknown profile/)
-  await assert.rejects(render(lock, { ...adapter, models: { explore: { mode: "subagent", model: "example/paid" } } }, root), /Space Bunny/)
+  await assert.rejects(render(lock, { ...adapter, models: { explore: { mode: "subagent", model: "no-provider" } } }, root), /invalid selection/)
   await assert.rejects(render(lock, { ...adapter, outputs: { ...adapter.outputs, server: "../escape" } }, root), /unsafe path/)
   const platform = JSON.parse(await readFile(join(root, "platform.json")))
   await writeFile(join(root, "platform.json"), JSON.stringify({ ...platform, theme: "wrong-domain" }))

@@ -8,10 +8,7 @@
 - Give delegated discovery a bounded question, expected evidence and stopping
   condition. Keep trivial work inline. The parent owns synthesis and correctness;
   use independent adversarial review when the risk warrants it.
-- Every actual subagent, including nested children, must explicitly use
-  `opencode/space-bunny-free`. If unavailable, report it and work directly; never
-  substitute a paid child model. This does not change owner-selected primary
-  sessions, continuation sessions or stateless Jev/helper calls. Subagents do not
+- Delegate to the configured roles by their advertised descriptions. Subagents do not
   create continuation sessions. Read-only explore has no shell or mutation tools.
 - Tool availability and names are model-specific. Use each tool's exact advertised
   name and schema. Claude may expose `write`/`edit` or full `mcp__...` gateway aliases;

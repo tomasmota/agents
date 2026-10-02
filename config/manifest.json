@@ -9,8 +9,7 @@
     "stuck-command": { "path": "opencode/plugins/stuck-command", "capability": "foreground-watchdog" },
     "tmux-title-jev": { "path": "opencode/plugins/tmux-title-jev", "capability": "tmux-only" },
     "gcloud-auth-healer": { "path": "opencode/plugins/gcloud-auth-healer", "capability": "workstation-auth-browser" },
-    "auto-handoff": { "path": "opencode/plugins/auto-handoff", "capability": "automatic-handoff" },
-    "child-policy": { "path": "opencode/plugins/child-policy", "capability": "free-child-dispatch" }
+    "auto-handoff": { "path": "opencode/plugins/auto-handoff", "capability": "automatic-handoff" }
   },
   "skills": {
     "hey": { "path": "skills/hey", "source": "owner-vendored HEY CLI skill from home-manager 31caea2; identical to Coder CLI-managed skill", "license": "upstream-unspecified", "version": "content-sha256" },
@@ -20,8 +19,8 @@
     "use-uvx": { "path": "skills/use-uvx", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" }
   },
   "profiles": {
-    "mac": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff", "child-policy"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx"], "cli": true },
-    "home-linux": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff", "child-policy"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx"], "cli": true },
-    "coder": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "child-policy"], "skills": ["hey", "typesafe-ai"], "cli": false }
+    "mac": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx"], "cli": true },
+    "home-linux": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx"], "cli": true },
+    "coder": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command"], "skills": ["hey", "typesafe-ai"], "cli": false }
   }
 }
