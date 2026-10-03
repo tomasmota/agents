@@ -33,9 +33,11 @@ test("all profiles render deterministically, pin every package and preserve expl
     assert.equal(server.agents.general.mode, profile === "coder" ? "subagent" : "all")
     assert.deepEqual(server.tool_output, { max_lines: 500, max_bytes: 16000 })
     for (const entry of server.plugins) assert.ok((entry.package ?? entry).includes(`#${lock.revision}::path:`))
+    assert.ok(a.has("out/skills/handoff/SKILL.md"))
     if (profile === "coder") {
       assert.ok(!server.plugins.some((entry) => (entry.package ?? entry).includes("auto-handoff")))
       assert.ok(!a.has("out/cli.json"))
+      assert.deepEqual(Object.keys(JSON.parse(a.get("out/inventory.json")).skills).sort(), ["handoff", "hey", "typesafe-ai"])
     }
     await apply(a, root)
     await apply(a, root, true)
