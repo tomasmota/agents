@@ -77,12 +77,17 @@ function memoryStorage(initial = {}) {
 // above sit either side of that rather than of an arbitrary number.
 const THRESHOLD = 10_000
 
-async function pluginHarness({ threshold = THRESHOLD, storage = memoryStorage(), plugin = AutoHandoffPlugin } = {}) {
+async function pluginHarness({ threshold = THRESHOLD, storage = memoryStorage(), plugin = AutoHandoffPlugin,
+  sessionLookup = async ({ sessionID }) => ({ id: sessionID }) } = {}) {
   const registrations = []
-  const calls = { synthetic: [], create: [], prompt: [] }
+  const calls = { synthetic: [], create: [], prompt: [], get: [] }
   const ctx = {
     options: { threshold },
     session: {
+      get: async (input) => {
+        calls.get.push(input)
+        return sessionLookup(input)
+      },
       hook: async (name, callback) => {
         const registration = { name, callback, disposed: 0 }
         registrations.push(registration)
@@ -295,6 +300,7 @@ test("steers once for concurrent over-threshold requests of one session", async 
     await Promise.all([h.request(event), h.request(event), h.request(event), h.request(event)])
     assert.equal(h.calls.synthetic.length, 1)
     assert.equal(h.storage.calls.set.length, 1)
+    assert.equal(h.calls.get.length, 1)
     await h.cleanup()
   })
 })
@@ -502,4 +508,62 @@ test("direct concurrent triggers reserve only once", async () => {
   await monitor.observe(overThresholdEvent())
   await Promise.all([monitor.trigger(), monitor.trigger()])
   assert.equal(steers, 1)
+})
+
+test("children and nested children never reserve or receive successor steers", async () => {
+  const sessions = {
+    ses_root: { id: "ses_root" },
+    ses_child: { id: "ses_child", parentID: "ses_root" },
+    ses_nested: { id: "ses_nested", parentID: "ses_child" },
+  }
+  const h = await pluginHarness({ sessionLookup: async ({ sessionID }) => sessions[sessionID] })
+  for (const agent of ["general", "explore"]) {
+    for (const sessionID of ["ses_child", "ses_nested"]) {
+      await h.request({ ...overThresholdEvent(sessionID), agent })
+    }
+  }
+  assert.deepEqual(h.calls.synthetic, [])
+  assert.deepEqual(h.storage.calls.set, [])
+  await h.request(overThresholdEvent("ses_root"))
+  assert.equal(h.calls.synthetic.length, 1)
+  assert.equal(h.calls.synthetic[0].sessionID, "ses_root")
+  assert.equal(h.calls.get.length, 3, "each known session's scope is looked up once")
+  await h.cleanup()
+})
+
+test("missing, malformed and failed scope lookups fail closed and can recover on a later request", async () => {
+  await quiet(async () => {
+    let lookup = 0
+    const h = await pluginHarness({ sessionLookup: async ({ sessionID }) => {
+      lookup++
+      if (lookup === 1) throw new Error("lookup offline")
+      if (lookup === 2) return null
+      if (lookup === 3) return {}
+      if (lookup === 4) return { id: "ses_other" }
+      return { id: sessionID }
+    } })
+    for (let i = 0; i < 4; i++) await h.request(overThresholdEvent())
+    assert.equal(h.calls.synthetic.length, 0)
+    assert.equal(h.storage.calls.set.length, 0)
+    await h.request(overThresholdEvent())
+    assert.equal(h.calls.synthetic.length, 1)
+    await h.cleanup()
+  })
+})
+
+test("unload during a scope lookup prevents a late reservation or steer", async () => {
+  const entered = deferred()
+  const release = deferred()
+  const h = await pluginHarness({ sessionLookup: async ({ sessionID }) => {
+    entered.resolve()
+    await release.promise
+    return { id: sessionID }
+  } })
+  const pending = h.request(overThresholdEvent())
+  await entered.promise
+  await h.cleanup()
+  release.resolve()
+  await pending
+  assert.equal(h.calls.synthetic.length, 0)
+  assert.equal(h.storage.calls.set.length, 0)
 })

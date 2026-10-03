@@ -130,3 +130,66 @@ test("ignores non-shell tools and empty commands", async () => {
   await healer.after(shellAfter("   ", EXPIRED))
   assert.equal(spawns, 0)
 })
+
+test("successful documentation diffs, searches and shell output never start a login", async () => {
+  const doc = "A gcloud/ADC command fails with an expired-session error; the plugin starts re-auth."
+  const commands = [
+    "git diff HEAD..origin/main -- agents/global/AGENTS.md",
+    "grep gcloud agents/global/AGENTS.md",
+    "gcloud compute instances list",
+  ]
+  let spawns = 0
+  let notices = 0
+  const healer = createHealer({
+    config: { cooldownMs: 300_000, logPath: "/tmp/fictional-test.log" },
+    spawnFn: async () => { spawns++ },
+    synthetic: async () => { notices++ },
+  })
+  for (const command of commands) {
+    for (const result of [
+      { content: [{ type: "text", text: doc }], metadata: { exit: 0 } },
+      { output: { output: doc, exit: 0, status: "completed" } },
+      { output: { output: doc, exit: 1 }, metadata: { exit: 0 } },
+      { output: { output: doc, exit: 0 }, metadata: { exit: 1 } },
+    ]) {
+      await healer.after(shellAfter(command, doc, { status: "completed", result }))
+    }
+  }
+  assert.equal(spawns, 0)
+  assert.equal(notices, 0)
+})
+
+test("unknown, nonnumeric and running exits are not affirmative failures", async () => {
+  let spawns = 0
+  const healer = createHealer({
+    config: { cooldownMs: 300_000, logPath: "/tmp/fictional-test.log" },
+    spawnFn: async () => { spawns++ },
+    synthetic: async () => { throw new Error("unexpected notice") },
+  })
+  for (const result of [
+    { content: EXPIRED },
+    { content: EXPIRED, metadata: { exit: "1" } },
+    { content: EXPIRED, metadata: { exit: null } },
+    { content: EXPIRED, metadata: { exit: NaN } },
+    { content: EXPIRED, metadata: { exit: Infinity } },
+    { content: EXPIRED, metadata: { exit: 1, status: "running" } },
+  ]) await healer.after(shellAfter("gcloud compute instances list", EXPIRED, { status: "completed", result }))
+  assert.equal(spawns, 0)
+})
+
+test("nonzero native output or metadata exits still heal real completed failures", async () => {
+  for (const result of [
+    { output: { output: EXPIRED, exit: 1, status: "completed" } },
+    { content: [{ type: "text", text: EXPIRED }], metadata: { exit: 1 } },
+  ]) {
+    const spawns = []
+    const healer = createHealer({
+      config: { cooldownMs: 300_000, logPath: "/tmp/fictional-test.log" },
+      spawnFn: async (command) => { spawns.push(command) },
+      synthetic: async () => {},
+    })
+    await healer.after(shellAfter("gcloud compute instances list", EXPIRED, { status: "completed", result }))
+    assert.equal(spawns.length, 1)
+    assert.match(spawns[0], /login --update-adc/)
+  }
+})

@@ -69,6 +69,14 @@ runtime proof. `inventory.mjs` separates intended, installed and active evidence
 It checks runtime versions, selected loaded-config settings, active pins and
 optional installed server/skill paths. Config documents are not per-request
 hook overrides.
+OpenCode 2.0.16 and 2.0.22 are supported exact runtime pins; consumers choose
+their version independently. The workstation retains 2.0.22 rather than
+downgrading existing session state; Coder remains on 2.0.16.
+Use `--server <http(s)-url>` to inspect an explicit server and `--directory <path>`
+for its intended location. The report identifies the selected connection; a
+default-service pass does not prove OpenChamber uses that server. Server URLs
+must not contain credentials. If authentication is required, supply it through
+the CLI's own environment, never command arguments or report output.
 `--runtime-only` uses the root-owned installed inventory, installed server and
 installed skills plus the live CLI/API, without requiring the editable source
 checkout's hashes. It explicitly reports intended artifact proof as not

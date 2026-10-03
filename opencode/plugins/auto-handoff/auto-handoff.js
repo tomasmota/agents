@@ -1,14 +1,14 @@
 // Automatic handoff to a fresh session at a context threshold.
 //
 // Long sessions get expensive and the model gets less reliable as the context
-// grows. This plugin watches each session's real request size and, once it
+// grows. This plugin watches each primary session's real request size and, once it
 // crosses a threshold, asks the *current* agent to do a handoff with the
 // existing `handoff` skill. The skill owns every mechanic — the document, model
 // resolution, session creation, pane attach — and the plugin owns only the
 // measurement and the trigger. An automatic handoff carries no new direction
 // from the user, because the user is not there to give any.
 //
-// Sequence, repeated on every model request of every session:
+// Sequence, repeated on every model request of every eligible primary session:
 //   1. the "context" model-request hook measures system + tools + messages
 //   2. still below threshold -> remember the size and wait for the next request
 //      (a session that starts small only crosses later, so the watch never ends
@@ -278,13 +278,39 @@ export const AutoHandoffPlugin = Plugin.define({
     // Plugin setup is location-scoped. Never share another location's monitor,
     // session client, threshold, or cleanup through a module-global map.
     const monitors = new Map()
+    const primaryChecks = new Map()
     let active = true
     const threshold = thresholdOf(ctx.options)
     const log = (message, detail) => console.error(`auto-handoff: ${message}${detail ? ` ${detail}` : ""}`)
+    // Agent mode is not session scope: an "all" agent can also be a child.
+    // Cache successful lookups, but retry unknown scope on a later request.
+    function isPrimary(sessionID) {
+      if (!primaryChecks.has(sessionID)) {
+        const check = Promise.resolve()
+          .then(() => ctx.session.get({ sessionID }))
+          .then((value) => {
+            const session = recordOf(value)
+            if (!session || session.id !== sessionID) {
+              primaryChecks.delete(sessionID)
+              return false
+            }
+            return session.parentID === undefined
+          })
+          .catch((error) => {
+            primaryChecks.delete(sessionID)
+            log(`session scope lookup failed for ${sessionID}:`, String(recordOf(error)?.message ?? error).slice(0, 200))
+            return false
+          })
+        primaryChecks.set(sessionID, check)
+      }
+      return primaryChecks.get(sessionID)
+    }
     const registration = await ctx.session.hook("context", async (event) => {
       if (!active) return
       const sessionID = recordOf(event)?.sessionID
       if (typeof sessionID !== "string" || sessionID === "") return
+      // Subagents report pressure to their parent; they never spawn successors.
+      if (!(await isPrimary(sessionID)) || !active) return
       // Created on the session's first request, then reused: a monitor is never
       // treated as a reason to stop watching the session.
       let monitor = monitors.get(sessionID)
@@ -309,6 +335,7 @@ export const AutoHandoffPlugin = Plugin.define({
       active = false
       for (const monitor of monitors.values()) monitor.dispose()
       monitors.clear()
+      primaryChecks.clear()
       await registration?.dispose?.()
     }
   },

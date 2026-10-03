@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "pluginApi": "2.0",
-  "testedOpenCode": ["2.0.16"],
+  "testedOpenCode": ["2.0.16", "2.0.22"],
   "packages": {
     "agent-routes": { "path": "opencode/plugins/agent-routes", "capability": "primary-routing" },
     "auto-retitle": { "path": "opencode/plugins/auto-retitle", "capability": "app-session-titles" },

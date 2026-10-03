@@ -15,6 +15,32 @@ const {
 
 const baseConfig = { model: { providerID: "openai", id: "gpt-6-luna", variant: "low" }, maxMessages: 3, userChars: 2000 }
 
+function memoryStorage(initial = {}) {
+  const data = new Map(Object.entries(initial))
+  return {
+    data,
+    get: async (key) => data.get(key),
+    set: async (key, value) => { data.set(key, value) },
+  }
+}
+
+async function quiet(body) {
+  const original = console.error
+  const logs = []
+  console.error = (...args) => logs.push(args.join(" "))
+  try {
+    return await body(logs)
+  } finally {
+    console.error = original
+  }
+}
+
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
 function userMessage(id, text) {
   return { id, type: "user", text, time: { created: 1 } }
 }
@@ -23,7 +49,8 @@ function assistantMessage(id) {
   return { id, type: "assistant", parts: [{ type: "text", text: "done" }], time: { created: 2 } }
 }
 
-function harness({ title = "Fix login bug", messages = [userMessage("m1", "fix the login bug")], verdict = null, generateError = null } = {}) {
+function harness({ title = "Fix login bug", messages = [userMessage("m1", "fix the login bug")], verdict = null,
+  generateError = null, storage = memoryStorage() } = {}) {
   const calls = []
   const session = {
     get: async (input) => {
@@ -44,8 +71,8 @@ function harness({ title = "Fix login bug", messages = [userMessage("m1", "fix t
     if (generateError) throw generateError
     return { text: verdict }
   }
-  const retitler = createRetitler({ config: baseConfig, generate, session })
-  return { retitler, calls, generations }
+  const retitler = createRetitler({ config: baseConfig, generate, session, storage })
+  return { retitler, calls, generations, storage }
 }
 
 test("parses provider/model#variant refs with fallback", () => {
@@ -197,7 +224,7 @@ test("a manual rename during the judge cannot be overwritten", async () => {
   // Baseline established, then the judge is deliberately suspended.
   retitler.renamed("ses_1", "Fix login bug")
   let release
-  const slow = createRetitler({ config: baseConfig, session: {
+  const slow = createRetitler({ config: baseConfig, storage: memoryStorage(), session: {
     get: async () => ({ title: "Fix login bug" }),
     context: async () => [userMessage("m1", "change focus")],
     update: async () => calls.push(["unexpected-update"]),
@@ -213,7 +240,7 @@ test("a manual rename during the judge cannot be overwritten", async () => {
 test("unload while the judge is pending cannot rename", async () => {
   let release
   let updates = 0
-  const retitler = createRetitler({ config: baseConfig, session: {
+  const retitler = createRetitler({ config: baseConfig, storage: memoryStorage(), session: {
     get: async () => ({ title: "Original" }),
     context: async () => [userMessage("m1", "new topic")],
     update: async () => updates++,
@@ -224,4 +251,251 @@ test("unload while the judge is pending cannot rename", async () => {
   release({ text: '{"needs_update":true,"title":"New topic"}' })
   await pending
   assert.equal(updates, 0)
+})
+
+test("manual-title opt-outs survive plugin-instance reloads without storing the title", async () => {
+  const storage = memoryStorage()
+  const first = harness({ storage })
+  first.retitler.renamed("ses_1", "Fix login bug")
+  await first.retitler.renamed("ses_1", "My manual title")
+  await first.retitler.dispose()
+  assert.deepEqual([...storage.data], [["manual-title/ses_1", true]])
+
+  const second = harness({ title: "My manual title", storage,
+    verdict: '{"needs_update":true,"title":"Other task"}' })
+  await second.retitler.evaluate("ses_1")
+  assert.equal(second.generations.length, 0)
+  assert.ok(!second.calls.some(([name]) => name === "update"))
+  assert.equal(second.retitler.states.get("ses_1").optedOut, true)
+  await second.retitler.dispose()
+})
+
+test("a missed manual rename detected during evaluation is also persisted", async () => {
+  const h = harness({ title: "My manual title" })
+  h.retitler.renamed("ses_1", "Fix login bug")
+  await h.retitler.evaluate("ses_1")
+  assert.equal(h.generations.length, 0)
+  assert.equal(h.storage.data.get("manual-title/ses_1"), true)
+  await h.retitler.dispose()
+})
+
+test("a manual rename discovered after judging persists even without its event", async () => {
+  const storage = memoryStorage()
+  let title = "Initial title"
+  let updates = 0
+  const session = {
+    get: async () => ({ title }),
+    context: async () => [userMessage("m1", "new task")],
+    update: async () => { updates++ },
+  }
+  const retitler = createRetitler({ config: baseConfig, storage, session, generate: async () => {
+    title = "My manual title"
+    return { text: '{"needs_update":true,"title":"Other task"}' }
+  } })
+  await retitler.evaluate("ses_1")
+  assert.equal(updates, 0)
+  assert.equal(storage.data.get("manual-title/ses_1"), true)
+  await retitler.dispose()
+  const reloaded = harness({ title, storage, verdict: '{"needs_update":true,"title":"Other task"}' })
+  await reloaded.retitler.evaluate("ses_1")
+  assert.equal(reloaded.generations.length, 0)
+  await reloaded.retitler.dispose()
+})
+
+test("unload waits for a pending manual opt-out write, but never for a judge", async () => {
+  const storage = memoryStorage()
+  const set = storage.set
+  let release
+  storage.set = async (key, value) => {
+    await new Promise((resolve) => { release = resolve })
+    await set(key, value)
+  }
+  const h = harness({ storage })
+  h.retitler.renamed("ses_1", "Fix login bug")
+  const write = h.retitler.renamed("ses_1", "My manual title")
+  while (!release) await Promise.resolve()
+  let unloaded = false
+  const unloading = h.retitler.dispose().then(() => { unloaded = true })
+  await Promise.resolve()
+  assert.equal(unloaded, false)
+  release()
+  await write
+  await unloading
+  assert.equal(storage.data.get("manual-title/ses_1"), true)
+})
+
+test("a storage read outage fails closed, then retries protection before judging", async () => {
+  const storage = memoryStorage({ "manual-title/ses_1": true })
+  const get = storage.get
+  let reads = 0
+  storage.get = async (key) => {
+    if (++reads === 1) throw new Error("storage offline")
+    return get(key)
+  }
+  const h = harness({ storage, verdict: '{"needs_update":true,"title":"Other task"}' })
+  await h.retitler.evaluate("ses_1")
+  assert.equal(h.generations.length, 0)
+  await h.retitler.evaluate("ses_1")
+  assert.equal(reads, 2)
+  assert.equal(h.generations.length, 0)
+  await h.retitler.dispose()
+})
+
+test("failed persistence preserves the in-memory manual opt-out", async () => {
+  const h = harness({ storage: {
+    get: async () => undefined,
+    set: async () => { throw new Error("disk full") },
+  } })
+  h.retitler.renamed("ses_1", "Fix login bug")
+  await h.retitler.renamed("ses_1", "My manual title")
+  await h.retitler.evaluate("ses_1")
+  assert.equal(h.generations.length, 0)
+  assert.equal(h.retitler.states.get("ses_1").optedOut, true)
+  await h.retitler.dispose()
+})
+
+test("a failed opt-out write recovers on idle activity and remains protected after reload", async () => {
+  await quiet(async () => {
+    const storage = memoryStorage()
+    const set = storage.set
+    let attempts = 0
+    storage.set = async (key, value) => {
+      if (++attempts === 1) throw new Error("storage offline")
+      await set(key, value)
+    }
+    const first = harness({ storage, verdict: '{"needs_update":true,"title":"Other task"}' })
+    first.retitler.renamed("ses_1", "Fix login bug")
+    await first.retitler.renamed("ses_1", "My manual title")
+    assert.equal(attempts, 1)
+    assert.equal(storage.data.size, 0)
+    await first.retitler.evaluate("ses_1")
+    assert.equal(attempts, 2)
+    assert.equal(storage.data.get("manual-title/ses_1"), true)
+    assert.equal(first.generations.length, 0)
+    assert.ok(!first.calls.some(([name]) => name === "update"))
+    await first.retitler.dispose()
+
+    const reloaded = harness({ storage, title: "My manual title", verdict: '{"needs_update":true,"title":"Other task"}' })
+    await reloaded.retitler.evaluate("ses_1")
+    assert.equal(reloaded.generations.length, 0)
+    assert.ok(!reloaded.calls.some(([name]) => name === "update"))
+    await reloaded.retitler.dispose()
+  })
+})
+
+test("outages retry on multiple activities and once at cleanup, with bounded logs and no judging", async () => {
+  await quiet(async (logs) => {
+    let attempts = 0
+    const h = harness({ storage: {
+      get: async () => undefined,
+      set: async () => { attempts++; throw new Error(`offline ${"x".repeat(1000)}`) },
+    }, verdict: '{"needs_update":true,"title":"Other task"}' })
+    h.retitler.renamed("ses_1", "Fix login bug")
+    await h.retitler.renamed("ses_1", "My manual title")
+    await h.retitler.renamed("ses_1", "Another manual title")
+    await h.retitler.evaluate("ses_1")
+    assert.equal(attempts, 3)
+    assert.equal(h.retitler.states.get("ses_1").optedOut, true)
+    assert.equal(h.generations.length, 0)
+    assert.ok(!h.calls.some(([name]) => name === "update"))
+    await h.retitler.dispose()
+    assert.equal(attempts, 4, "cleanup makes one final attempt, not an unbounded retry loop")
+    assert.equal(logs.length, 4)
+    assert.ok(logs.every((log) => log.length < 400 && !log.includes("x".repeat(201))))
+  })
+})
+
+test("concurrent rename and idle activity coalesce a recovered dirty opt-out write", async () => {
+  await quiet(async () => {
+    const storage = memoryStorage()
+    const set = storage.set
+    const entered = deferred()
+    const release = deferred()
+    let attempts = 0
+    storage.set = async (key, value) => {
+      if (++attempts === 1) throw new Error("storage offline")
+      entered.resolve()
+      await release.promise
+      await set(key, value)
+    }
+    const h = harness({ storage })
+    h.retitler.renamed("ses_1", "Fix login bug")
+    await h.retitler.renamed("ses_1", "My manual title")
+    const activities = Promise.all([
+      h.retitler.renamed("ses_1", "Another manual title"),
+      h.retitler.evaluate("ses_1"),
+      h.retitler.renamed("ses_1", "Another manual title"),
+      h.retitler.evaluate("ses_1"),
+    ])
+    await entered.promise
+    assert.equal(attempts, 2)
+    release.resolve()
+    await activities
+    assert.equal(storage.data.get("manual-title/ses_1"), true)
+    assert.equal(h.generations.length, 0)
+    await h.retitler.evaluate("ses_1")
+    await h.retitler.dispose()
+    assert.equal(attempts, 2, "a durable opt-out is never written again")
+  })
+})
+
+test("cleanup retries dirty opt-outs without waiting for an unresolved judge", { timeout: 1000 }, async (t) => {
+  await quiet(async () => {
+    const storage = memoryStorage()
+    const set = storage.set
+    const judgeEntered = deferred()
+    const judge = deferred()
+    t.after(() => judge.resolve({ text: '{"needs_update":true,"title":"Other task"}' }))
+    let attempts = 0, updates = 0, finished = false
+    storage.set = async (key, value) => {
+      if (++attempts === 1) throw new Error("storage offline")
+      await set(key, value)
+    }
+    const retitler = createRetitler({ config: baseConfig, storage, session: {
+      get: async () => ({ title: "Initial title" }),
+      context: async () => [userMessage("m1", "new task")],
+      update: async () => { updates++ },
+    }, generate: async () => {
+      judgeEntered.resolve()
+      return judge.promise
+    } })
+    const pending = retitler.evaluate("ses_1").then(() => { finished = true })
+    await judgeEntered.promise
+    await retitler.renamed("ses_1", "My manual title")
+    await retitler.dispose()
+    assert.equal(attempts, 2)
+    assert.equal(storage.data.get("manual-title/ses_1"), true)
+    assert.equal(finished, false, "cleanup returns before the suspended judge")
+    judge.resolve({ text: '{"needs_update":true,"title":"Other task"}' })
+    await pending
+    assert.equal(updates, 0)
+  })
+})
+
+test("cleanup retries a write that was in flight when unloading and then failed", async () => {
+  await quiet(async () => {
+    const storage = memoryStorage()
+    const set = storage.set
+    const entered = deferred()
+    const firstWrite = deferred()
+    let attempts = 0
+    storage.set = async (key, value) => {
+      if (++attempts === 1) {
+        entered.resolve()
+        await firstWrite.promise
+      }
+      await set(key, value)
+    }
+    const h = harness({ storage })
+    h.retitler.renamed("ses_1", "Fix login bug")
+    const write = h.retitler.renamed("ses_1", "My manual title")
+    await entered.promise
+    const unloading = h.retitler.dispose()
+    assert.equal(h.retitler.dispose(), unloading, "concurrent cleanup shares the same drain and retry")
+    firstWrite.reject(new Error("storage offline"))
+    await write
+    await unloading
+    assert.equal(attempts, 2)
+    assert.equal(storage.data.get("manual-title/ses_1"), true)
+  })
 })

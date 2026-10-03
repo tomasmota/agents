@@ -7,6 +7,13 @@ import { fileURLToPath } from "node:url"
 import { validateRoutes } from "../opencode/plugins/agent-routes/lib/agent-routes.js"
 
 export const SOURCE = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+// Exact consumer-lock versions whose V2 server/CLI/plugin API behavior is verified
+// (2.0.22 added no config-merge, plugin, skill or info envelope changes relative
+// to 2.0.16). Exact strings only; no ranges or prefixes. A lock must be in BOTH this
+// set and manifest.testedOpenCode, so the manifest cannot admit a version the
+// installed inventory tool does not support. Rendered output differs between
+// versions only by the recorded lock version.
+export const COMPATIBLE_OPENCODE = Object.freeze(["2.0.16", "2.0.22"])
 const json = (value) => JSON.stringify(value, null, 2) + "\n"
 const hash = (value) => createHash("sha256").update(value).digest("hex")
 const readJSON = async (path) => JSON.parse(await readFile(path, "utf8"))
@@ -69,7 +76,7 @@ export async function render(lock, adapter, root, source = SOURCE) {
   await noSymlinks(root, adapter.server)
   const manifest = await readJSON(join(source, "config/manifest.json"))
   if (lock.schemaVersion !== 1 || !/^[a-f0-9]{40}$/.test(lock.revision)) throw new Error("immutable 40-hex central revision required")
-  if (lock.pluginApi !== manifest.pluginApi || !manifest.testedOpenCode.includes(lock.opencode)) throw new Error("unsupported OpenCode/plugin API version")
+  if (lock.pluginApi !== manifest.pluginApi || !(Array.isArray(manifest.testedOpenCode) && manifest.testedOpenCode.includes(lock.opencode) && COMPATIBLE_OPENCODE.includes(lock.opencode))) throw new Error("unsupported OpenCode/plugin API version")
   const profile = manifest.profiles[adapter.profile]
   if (!profile) throw new Error(`unknown profile: ${adapter.profile}`)
   keys(adapter.outputs, ["server", "instructions", "routes", "inventory", "inventoryTool", "skills", "helpers", "cli"], "outputs")

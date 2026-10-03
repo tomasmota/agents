@@ -1,14 +1,17 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { mkdtemp, writeFile, readFile, rm, mkdir, symlink } from "node:fs/promises"
+import { mkdtemp, writeFile, readFile, rm, mkdir, symlink, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execFileSync } from "node:child_process"
 import { render, apply } from "../render.mjs"
 
 const lock = { schemaVersion: 1, revision: "a".repeat(40), pluginApi: "2.0", opencode: "2.0.16" }
+// macOS exposes its temp directory through /var -> /private/var. Fixtures
+// should use the canonical directory, not weaken the renderer's symlink guard.
+const temp = await realpath(tmpdir())
 async function fixture(t, profile = "coder") {
-  const root = await mkdtemp(join(tmpdir(), "agents-render-"))
+  const root = await mkdtemp(join(temp, "agents-render-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   await writeFile(join(root, "platform.json"), JSON.stringify({ permissions: [{ action: "shell", resource: "danger*", effect: "deny" }], experimental: { subagent_depth: 2 }, agents: { build: { model: "example/primary#high" } } }))
   await writeFile(join(root, "platform.md"), "Platform identity and boundaries.\n")
@@ -108,7 +111,7 @@ test("normalized collisions, input overwrites and output symlinks are rejected",
   await assert.rejects(render(lock, { ...adapter, outputs: { ...adapter.outputs, routes: "out/./server.json" } }, root), /unsafe path/)
   await assert.rejects(render(lock, { ...adapter, outputs: { ...adapter.outputs, server: "platform.json" } }, root), /collision/)
   const outputs = await render(lock, adapter, root)
-  const outside = await mkdtemp(join(tmpdir(), "agents-outside-"))
+  const outside = await mkdtemp(join(temp, "agents-outside-"))
   t.after(() => rm(outside, { recursive: true, force: true }))
   await symlink(outside, join(root, "out"))
   await assert.rejects(apply(outputs, root), /symlink/)
@@ -127,7 +130,7 @@ test("runtime route validation rejects empty roles and invalid fallbacks", async
 test("consumer root and symlinked ancestor are rejected before reading or applying artifacts", async (t) => {
   const { root, adapter } = await fixture(t)
   const outputs = await render(lock, adapter, root)
-  const parent = await mkdtemp(join(tmpdir(), "agents-root-link-"))
+  const parent = await mkdtemp(join(temp, "agents-root-link-"))
   t.after(() => rm(parent, { recursive: true, force: true }))
   await symlink(root, join(parent, "linked"))
   for (const destination of [join(parent, "linked"), join(parent, "linked", "nested")]) {

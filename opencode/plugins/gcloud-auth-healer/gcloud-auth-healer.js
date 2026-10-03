@@ -8,6 +8,8 @@
 // Detection runs on `tool.execute.after` for shell commands. It never fires
 // for the login commands themselves, and IAM permission errors (e.g.
 // "does not have permission", PERMISSION_DENIED) do not count as expiry.
+// Only explicit tool errors or native nonzero shell exits qualify; a zero or
+// unknown exit must not turn successful documentation output into a login.
 //
 // On detection the plugin spawns one of:
 //   nohup gcloud auth login --update-adc >/tmp/gcloud-reauth.log 2>&1 &
@@ -188,6 +190,20 @@ function shellCommandOf(event) {
   return input.command
 }
 
+// Native V2 shell results put the numeric exit in output and metadata. A
+// completed tool call is not necessarily a failed command: successful diffs
+// and searches can quote auth errors. Unknown exits are not failure evidence.
+function failedShell(event) {
+  const result = recordOf(event?.result)
+  const output = recordOf(result?.output)
+  const metadata = recordOf(result?.metadata)
+  const exits = [output?.exit, metadata?.exit].filter(Number.isFinite)
+  if (exits.includes(0)) return false
+  if (event?.status === "error") return true
+  if (event?.status !== "completed" || output?.status === "running" || metadata?.status === "running") return false
+  return exits.some((exit) => exit !== 0)
+}
+
 function defaultSpawn(command) {
   const child = spawn("sh", ["-c", command], { stdio: "ignore", detached: true })
   child.unref?.()
@@ -199,7 +215,7 @@ function createHealer({ config, spawnFn = defaultSpawn, synthetic = async () => 
 
   async function after(event) {
     const command = shellCommandOf(event)
-    if (!command || typeof event?.sessionID !== "string") return
+    if (!command || typeof event?.sessionID !== "string" || !failedShell(event)) return
     const kind = classifyFailure(command, failureTextOf(event))
     if (!kind) return
     const now = clock.now()
@@ -251,6 +267,7 @@ const testHelpers = {
   classifyFailure,
   buildHealCommand,
   healMessage,
+  failedShell,
   createHealer,
 }
 

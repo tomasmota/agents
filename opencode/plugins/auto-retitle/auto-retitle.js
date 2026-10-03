@@ -10,6 +10,8 @@
 // the baseline; any later external title change opts that session out of
 // automatic retitling. There is no per-session rename cap: every idle turn
 // with new user messages is evaluated.
+// Manual opt-outs are stored per session and survive plugin reloads; a storage
+// read failure suppresses judging until protection can be read again.
 //
 // Runtime configuration (plugin options take precedence):
 //   model            "providerID/modelID#variant", default "openai/gpt-6-luna#low"
@@ -25,6 +27,7 @@ const DEFAULT_MODEL_REF = "openai/gpt-6-luna#low"
 const DEFAULT_MAX_MESSAGES = 3
 const DEFAULT_USER_CHARS = 2000
 const MAX_TITLE_CHARS = 80
+const MANUAL_TITLE_PREFIX = "manual-title/"
 
 function recordOf(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null
@@ -139,19 +142,68 @@ function parseJudgeResponse(text, currentTitle) {
   return { needs_update: true, title }
 }
 
-function createRetitler({ config, generate, session, directory }) {
+function createRetitler({ config, generate, session, storage, directory }) {
   const states = new Map()
   const inflight = new Map()
+  const writes = new Set()
   let disposed = false
+  let disposing
 
   const stateOf = (sessionID) => {
     let state = states.get(sessionID)
     if (!state) {
-      state = { adopted: false, lastKnown: undefined, pending: undefined, lastKey: undefined, optedOut: false }
+      state = { adopted: false, lastKnown: undefined, pending: undefined, lastKey: undefined, optedOut: false, dirty: false }
       states.set(sessionID, state)
       // Never evict a manual-rename opt-out while this instance is alive.
     }
     return state
+  }
+
+  // Exact-key JSON reads/writes are durable and plugin-scoped in V2. Store
+  // only the opt-out, never the user's title or a capped list of session IDs.
+  function restoreOptOut(sessionID, state) {
+    state.restored ??= Promise.resolve()
+      .then(() => storage.get(`${MANUAL_TITLE_PREFIX}${sessionID}`))
+      .then((value) => {
+        if (value !== undefined) {
+          state.optedOut = true
+          state.dirty = false
+        }
+      })
+      .catch((error) => {
+        state.restored = undefined
+        throw error // No judge or rename while protection cannot be read.
+      })
+    return state.restored
+  }
+
+  function persistOptOut(sessionID, state) {
+    if (!state.dirty) return
+    // Coalesce only in-flight work. A rejection leaves the opt-out dirty, and
+    // clearing the settled promise lets later activity retry after recovery.
+    if (!state.persisting) {
+      const work = Promise.resolve()
+        .then(() => storage.set(`${MANUAL_TITLE_PREFIX}${sessionID}`, true))
+        .then(() => { state.dirty = false })
+        .catch((error) => {
+          console.error(`auto-retitle could not persist manual opt-out for ${sessionID} (${String(error?.message ?? error).slice(0, 200)})`)
+        })
+        .finally(() => {
+          if (state.persisting === work) state.persisting = undefined
+          writes.delete(work)
+        })
+      state.persisting = work
+      writes.add(work)
+    }
+    return state.persisting
+  }
+
+  function optOut(sessionID, state) {
+    if (!state.optedOut) {
+      state.optedOut = true // Protect an in-flight judge before awaiting storage.
+      state.dirty = true
+    }
+    return persistOptOut(sessionID, state)
   }
 
   // Tracks session.renamed. Our own rename is expected (pending); the first
@@ -161,7 +213,7 @@ function createRetitler({ config, generate, session, directory }) {
     if (disposed) return
     if (typeof sessionID !== "string" || typeof title !== "string") return
     const state = stateOf(sessionID)
-    if (state.optedOut) return
+    if (state.optedOut) return persistOptOut(sessionID, state)
     if (state.pending !== undefined && state.pending === title) {
       state.pending = undefined
       state.lastKnown = title
@@ -175,12 +227,15 @@ function createRetitler({ config, generate, session, directory }) {
       state.lastKnown = title
       return
     }
-    state.optedOut = true
+    return optOut(sessionID, state)
   }
 
   async function evaluate(sessionID) {
     if (disposed) return
     if (typeof sessionID !== "string" || sessionID === "") return
+    // Even a suspended judge must not prevent a dirty opt-out from recovering.
+    const state = states.get(sessionID)
+    if (state?.optedOut) return persistOptOut(sessionID, state)
     if (inflight.has(sessionID)) return
     const work = run(sessionID).catch((error) => {
       console.error(`auto-retitle failed for ${sessionID} (${String(error?.message ?? error).slice(0, 200)})`)
@@ -195,7 +250,9 @@ function createRetitler({ config, generate, session, directory }) {
 
   async function run(sessionID) {
     const state = stateOf(sessionID)
-    if (state.optedOut) return
+    if (state.optedOut) return persistOptOut(sessionID, state)
+    await restoreOptOut(sessionID, state)
+    if (disposed || state.optedOut) return
     const info = await session.get({ sessionID })
     if (disposed || info?.parentID || (directory && info?.location?.directory !== directory)) return
     const title = typeof info?.title === "string" ? info.title.trim() : ""
@@ -206,7 +263,7 @@ function createRetitler({ config, generate, session, directory }) {
       if (!state.adopted) {
         state.adopted = true
       } else {
-        state.optedOut = true
+        await optOut(sessionID, state)
         return
       }
     }
@@ -226,7 +283,11 @@ function createRetitler({ config, generate, session, directory }) {
     // A user can rename while the judge is awaiting I/O. Do not overwrite that
     // edit even if its event has not reached this instance yet.
     const latest = await session.get({ sessionID })
-    if (disposed || state.optedOut || latest?.title?.trim() !== title) return
+    if (disposed || state.optedOut) return
+    if (latest?.title?.trim() !== title) {
+      if (typeof latest?.title === "string") await optOut(sessionID, state)
+      return
+    }
     state.pending = verdict.title
     try {
       await session.update({ sessionID, title: verdict.title })
@@ -237,9 +298,18 @@ function createRetitler({ config, generate, session, directory }) {
   }
 
   function dispose() {
+    if (disposing) return disposing
     disposed = true
-    states.clear()
     inflight.clear()
+    disposing = (async () => {
+      // Drain current writes, then retry anything still dirty once. Cleanup is
+      // best effort during an outage and never waits for stateless judges.
+      await Promise.allSettled([...writes])
+      await Promise.allSettled([...states].filter(([, state]) => state.dirty)
+        .map(([sessionID, state]) => persistOptOut(sessionID, state)))
+      states.clear()
+    })()
+    return disposing
   }
 
   return { evaluate, renamed, dispose, states }
@@ -269,6 +339,7 @@ export const AutoRetitlePlugin = Plugin.define({
       config,
       generate: (input) => ctx.generate.text(input),
       session: ctx.session,
+      storage: ctx.storage,
       directory: ctx.location?.directory,
     })
     const controller = new AbortController()
@@ -278,7 +349,7 @@ export const AutoRetitlePlugin = Plugin.define({
           if (event?.type === "session.idle" && typeof event?.data?.sessionID === "string") {
             void retitler.evaluate(event.data.sessionID)
           } else if (event?.type === "session.renamed" && typeof event?.data?.sessionID === "string") {
-            retitler.renamed(event.data.sessionID, event.data.title)
+            await retitler.renamed(event.data.sessionID, event.data.title)
           }
         } catch (error) {
           console.error(`auto-retitle event failed (${String(error?.message ?? error).slice(0, 200)})`)
@@ -290,9 +361,10 @@ export const AutoRetitlePlugin = Plugin.define({
       }
     })
     return async () => {
-      retitler.dispose()
+      const persisted = retitler.dispose()
       controller.abort()
       await loop
+      await persisted
     }
   },
 })

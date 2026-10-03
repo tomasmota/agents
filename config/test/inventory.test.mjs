@@ -7,7 +7,7 @@ import { render, apply } from "../render.mjs"
 import { reportInventory } from "../inventory.mjs"
 
 test("real 2.0.16 API shapes, active version/settings/pins and secret-safe allowlists", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "inventory-fixture-"))
+  const root = await mkdtemp(join(await realpath(tmpdir()), "inventory-fixture-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   await writeFile(join(root, "platform.json"), JSON.stringify({ permissions: [], experimental: { subagent_depth: 2 } }))
   await writeFile(join(root, "platform.md"), "Fictional platform")

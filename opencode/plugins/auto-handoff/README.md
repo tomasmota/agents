@@ -2,23 +2,28 @@
 
 An OpenCode V2 server plugin that steers a long session into a handoff before
 it gets expensive or unreliable. It uses the `session` model-request hook to
-watch each session's real request size; no polling, no extra model call, and
-no separate summarizer.
+watch each primary session's real request size; no polling, no extra model call,
+and no separate summarizer.
 
 ## Behavior
 
-When a session's assembled request (system instructions + tool schemas +
+When a primary session's assembled request (system instructions + tool schemas +
 messages) crosses the threshold, the current agent is asked, once, to do a
 handoff with the `handoff` skill: write the document, spawn the next session
 with it as the first prompt, and attach the user to it, all as that skill
 describes. An automatic handoff carries no new direction from the user, because
 the user is not there to give any.
 
+Session scope is checked through its actual `parentID`, not the agent's mode.
+Children and nested children never receive successor steers; failed or malformed
+scope lookups fail closed and are retried on a later request.
+
 The plugin deliberately does no more than that. It never creates a session,
 submits a prompt, or touches tmux: the `handoff` skill is the single source of
 truth for spawn mechanics, including model resolution through `model-selector`.
-Every request is checked until the session is reserved for steering. Each attempt
-gets its own durable `handoff/<sessionID>` record **before** the steer, so later sessions do not
+Every eligible primary request is checked until the session is reserved for
+steering. Each attempt gets its own durable `handoff/<sessionID>` record **before**
+the steer, so later sessions do not
 overwrite its restart guard. Old entries in the legacy `handoffs` list are
 also honored; records that older versions already lost cannot be recovered.
 
