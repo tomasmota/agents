@@ -45,6 +45,20 @@ test("all profiles render deterministically, pin every package and preserve expl
     await assert.rejects(apply(a, root, true), /stale generated/)
   }
 })
+test("every profile composes its local instructions with exactly one unchanged shared base", async (t) => {
+  const shared = await readFile(new URL("../instructions.md", import.meta.url), "utf8")
+  assert.match(shared, /## Delegation and review/)
+  assert.match(shared, /## Instruction and skill ownership/)
+  for (const profile of ["coder", "mac", "home-linux"]) {
+    const { root, adapter } = await fixture(t, profile)
+    const local = `# ${profile} boundaries\n\nOnly this profile's approved authority applies.\n`
+    await writeFile(join(root, "platform.md"), local)
+    const outputs = await render(lock, adapter, root)
+    const instructions = outputs.get("out/AGENTS.md").toString()
+    assert.equal(instructions, `<!-- Generated from agents ${lock.revision}; edit the platform adapter or shared source. -->\n\n${local.trimEnd()}\n\n${shared}`)
+    assert.equal(instructions.split("# Shared agent base").length - 1, 1)
+  }
+})
 test("unknown inputs, moving refs, paid child profiles, version drift and unsafe paths fail closed", async (t) => {
   const { root, adapter } = await fixture(t)
   await assert.rejects(render({ ...lock, revision: "main" }, adapter, root), /immutable/)

@@ -4,6 +4,50 @@
 Consumer adapters retain platform permissions, paths, credentials, primary
 models, CLI settings, browsers and lifecycle. Never put secrets in an adapter.
 
+## Instructions and skills: choosing the owner
+
+Every profile renders its global `AGENTS.md` as the consumer's `platform.md`
+followed by the same `config/instructions.md`. The shared base owns investigation,
+context handling, delegation/review, model/tool-name guidance, client detection,
+secret hygiene and the ownership heuristics themselves. Adapters contain only
+actual environment differences, not a second copy of the shared workflow. These
+layers are combined instructions, not an override mechanism; resolve contradictions
+in the sources rather than relying on their order.
+
+| Guidance | Canonical source | Trigger location |
+| --- | --- | --- |
+| Portable, public-safe always-loaded behavior | `config/instructions.md` | Shared base |
+| Machine/client boundaries, commands or lifecycle | Consumer platform adapter | That platform's instructions |
+| Repository conventions | That repository's `AGENTS.md` | Repository scope |
+| Portable, public reusable procedure | `skills/<name>/SKILL.md` plus manifest metadata | Skill description; shared explicit trigger only when all affected profiles support it, otherwise guard availability or keep it in the adapter |
+| Platform-specific public procedure | Consumer-owned non-generated skill source | Skill description or platform instruction trigger |
+| Project-only or private/local/team procedure | Owning project/private location | Its own scope; never publish private contents for parity |
+
+Keep detailed procedures in on-demand skills. Prefer their discoverable descriptions
+over extra always-loaded boilerplate; explicit safety-critical triggers can be
+short. Split a mixed skill into portable behavior and a small platform reference
+only when the core truly works without importing local authority. For example,
+HEY task guidance is portable; Coder guest administration and restart policy are
+not. A public-safe skill can still require credentials at runtime; those credentials
+and their provisioning stay local. Ask when publication or installation scope is
+ambiguous.
+
+Register central skills with honest provenance/license metadata and choose their
+installation profiles in `manifest.json`. Central ownership does **not** mean all
+profiles must install them (`model-selector`/`use-uvx` are workstation-only today).
+Do not add unconditional base triggers for absent skills. Consumer inventories
+identify generated skills; other owned skill sources follow that consumer's
+README. Never edit a generated skill or global instruction as the policy source.
+
+After changing shared guidance/skills: test and review central changes, commit/push,
+advance each intended consumer's full-SHA lock, render/check, inspect the platform
+and skill-availability diffs, then deploy and verify each target by its runbook.
+Record source-only validation separately from installed/active proof and leave
+blocked target acceptance explicit. A local-only change follows only its owner's
+workflow and does not require copying a rule back into the shared base.
+
+## Rendering and acceptance
+
 Consumer `lock.json` selects a full immutable Git revision and tested OpenCode
 version. The manifest deliberately does not hash its own commit. Rendering is
 offline, validates package entrypoints, and rejects unrecognized adapter fields.

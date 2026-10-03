@@ -19,6 +19,10 @@ you commit is world-readable, including git history.
 Machines load independently installable `opencode/plugins/*` packages at the
 immutable central revision in their consumer lock. Shared roles, portable skills
 and instructions live here; read `config/README.md` for generation contracts.
+For new guidance or skills, use its ownership table and the heuristics in
+`config/instructions.md`: shared base vs platform vs repository scope, then public
+vs private and intended installation profiles. Do not turn local policy into a
+portable default or add an unconditional trigger for a skill absent on a profile.
 
 After changing a plugin, always:
 
