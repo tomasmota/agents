@@ -45,6 +45,20 @@ test("all profiles render deterministically, pin every package and preserve expl
     await assert.rejects(apply(a, root, true), /stale generated/)
   }
 })
+test("free role wording describes only its adapter-selected model in every profile", async (t) => {
+  for (const profile of ["coder", "mac", "home-linux"]) {
+    const { root, adapter } = await fixture(t, profile)
+    const models = { ...adapter.models, free: { mode: "subagent", model: "example/free-lite" } }
+    const outputs = await render(lock, { ...adapter, models }, root)
+    const agents = JSON.parse(outputs.get("out/server.json")).agents
+    assert.equal(agents.free.model, "example/free-lite")
+    assert.equal(agents.general.model, "example/primary#high")
+    assert.equal(agents.explore.model, "example/fast")
+    assert.match(agents.free.description, /General-purpose free delegated work\./)
+    assert.match(agents.free.description, /platform adapter selects/)
+    assert.doesNotMatch(agents.free.description, /all (actual )?children|same (free )?model|regardless of role/i)
+  }
+})
 test("every profile composes its local instructions with exactly one unchanged shared base", async (t) => {
   const shared = await readFile(new URL("../instructions.md", import.meta.url), "utf8")
   assert.match(shared, /## Delegation and review/)

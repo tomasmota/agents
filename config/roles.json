@@ -40,7 +40,7 @@
     ]
   },
   "free": {
-    "description": "General-purpose free delegated work. All actual children use the same free model regardless of role.",
+    "description": "General-purpose free delegated work. The platform adapter selects this role's model.",
     "system": "Handle the bounded task autonomously, verify proportionately and report the outcome concisely."
   }
 }
