@@ -5,6 +5,7 @@ import { join } from "node:path"
 import test from "node:test"
 
 import { createAgentRoutes } from "../index.js"
+import { resetSharedExhausted } from "../lib/exhausted.js"
 import { resetSharedQuota } from "../lib/quota-cache.js"
 
 const MODELS = [
@@ -121,8 +122,9 @@ function fakeContext({ models = MODELS, sessions = {} } = {}) {
   }
 }
 
-async function setup(t, { dir, routes = ROUTES, routesText, quota = {}, quotaSources, models, sessions } = {}) {
+async function setup(t, { dir, routes = ROUTES, routesText, quota = {}, quotaSources, models, sessions, keepShared = false } = {}) {
   resetSharedQuota()
+  if (!keepShared) resetSharedExhausted()
   dir ??= await mkdtemp(join(tmpdir(), "agent-routes-plugin-"))
   const files = { routesFile: join(dir, "subagents.jsonc"), stateFile: join(dir, "state.json"), logFile: join(dir, "log") }
   await writeFile(files.routesFile, routesText ?? `// comment\n${JSON.stringify(routes, null, 2)}\n`)
@@ -272,9 +274,101 @@ test("hot-reloads edits and keeps the last good routes on invalid edits", async 
   await writeFile(files.routesFile, JSON.stringify(edited))
   const state = await waitFor(async () => {
     const current = await readJson(files.stateFile)
-    return current.errors.length ? current : undefined
+    return current.errors.some((error) => /claude-opus-9 is not an available model/.test(error)) ? current : undefined
   })
-  assert.match(state.errors[0], /claude-opus-9 is not an available model/)
+  assert.equal(state.errors.length, 1)
   assert.equal(agents.get("general").model.id, "claude-opus-5-5")
   assert.match(await readFile(files.logFile, "utf8"), /kept the last good routes/)
+})
+
+const quotaFailure = (providerID, error = { type: "provider.quota", message: "The usage limit has been reached" }) => ({
+  sessionID: "child",
+  agent: "terminal",
+  model: { providerID, id: "gpt-6.1-sol", variant: "xhigh" },
+  error,
+  attempt: 1,
+  decision: { retry: false },
+})
+
+test("a quota failure with no quota source switches the provider's roles to the fallback", async (t) => {
+  const { agents, files, sessionHooks } = await setup(t)
+  assert.equal(agents.get("terminal").model.providerID, "openai")
+
+  const event = quotaFailure("openai")
+  await sessionHooks.retry(event)
+  await waitFor(() => agents.get("terminal")?.model?.providerID === "claude-subscription")
+  assert.deepEqual(agents.get("terminal").model, { providerID: "claude-subscription", id: "claude-opus-5-5", variant: "xhigh" })
+  assert.deepEqual(event.decision, { retry: false }, "the hook only observes")
+
+  const state = await waitFor(async () => {
+    const current = await readJson(files.stateFile)
+    return current.low.includes("openai") ? current : undefined
+  })
+  assert.equal(state.agents.terminal.fallbackFrom, "openai/gpt-6.1-sol#xhigh")
+  assert.deepEqual(Object.keys(state.exhausted), ["openai"])
+  assert.equal(agents.get("general").model.providerID, "claude-subscription", "other providers are unaffected")
+  assert.match(await readFile(files.logFile, "utf8"), /openai hit its usage limit/)
+})
+
+test("transient rate limits, other errors and providers without a fallback do not switch roles", async (t) => {
+  const { agents, files, sessionHooks } = await setup(t)
+  await sessionHooks.retry(quotaFailure("openai", { type: "provider.rate-limit", status: 429, message: "slow down" }))
+  await sessionHooks.retry(quotaFailure("openai", { type: "provider.transport", message: "socket closed" }))
+  await sessionHooks.retry(quotaFailure("inco"))
+  await sessionHooks.retry({ sessionID: "child", error: { type: "provider.quota", message: "x" } })
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.equal(agents.get("terminal").model.providerID, "openai")
+  const state = await readJson(files.stateFile)
+  assert.deepEqual(state.low, [])
+  assert.deepEqual(state.exhausted, {})
+})
+
+test("a recorded quota failure survives a restart through the state file", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "agent-routes-plugin-"))
+  const first = await setup(t, { dir })
+  await first.sessionHooks.retry(quotaFailure("openai"))
+  await waitFor(async () => (await readJson(first.files.stateFile)).low.includes("openai"))
+  await first.cleanup()
+
+  const second = await setup(t, { dir })
+  assert.equal(second.agents.get("terminal").model.providerID, "claude-subscription")
+})
+
+test("a quota reading taken after the failure supersedes it; an older reading does not", async (t) => {
+  const now = Date.now()
+  const entry = { detectedAt: now - 60_000, until: now + 30 * 60_000, windowMs: 30 * 60_000 }
+
+  const dir = await mkdtemp(join(tmpdir(), "agent-routes-plugin-"))
+  await writeFile(join(dir, "state.json"), JSON.stringify({ updatedAt: now, quota: {}, exhausted: { openai: entry } }))
+  const healthyNow = { fiveHourLeft: 90, weeklyLeft: 90, checkedAt: now }
+  const newer = await setup(t, { dir, quota: { openai: healthyNow } })
+  await waitFor(() => newer.agents.get("terminal")?.model?.providerID === "openai")
+  assert.deepEqual((await readJson(newer.files.stateFile)).exhausted, {}, "a superseded failure is dropped")
+
+  const olderReading = { ...healthyNow, checkedAt: now - 120_000 }
+  const older = await setup(t, {
+    quotaSources: { openai: async () => olderReading },
+    dir: await mkdtemp(join(tmpdir(), "agent-routes-plugin-")),
+  })
+  await older.sessionHooks.retry(quotaFailure("openai"))
+  await waitFor(() => older.agents.get("terminal")?.model?.providerID === "claude-subscription")
+})
+
+test("a quota failure seen by one plugin instance reaches the others in the process", async (t) => {
+  const first = await setup(t)
+  const second = await setup(t, { keepShared: true })
+  assert.equal(second.agents.get("terminal").model.providerID, "openai")
+  await first.sessionHooks.retry(quotaFailure("openai"))
+  await waitFor(() => second.agents.get("terminal")?.model?.providerID === "claude-subscription")
+})
+
+test("does not fall back onto a provider that is also low", async (t) => {
+  const { agents, sessionHooks } = await setup(t, {
+    quota: { "claude-subscription": { fiveHourLeft: 2, weeklyLeft: 80, checkedAt: Date.now() } },
+  })
+  await waitFor(() => agents.get("general")?.model?.providerID === "openai")
+  await sessionHooks.retry(quotaFailure("openai"))
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.equal(agents.get("terminal").model.providerID, "openai", "no chaining: both low keeps the configured model")
+  assert.equal(agents.get("general").model.providerID, "claude-subscription")
 })

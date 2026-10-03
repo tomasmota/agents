@@ -7,7 +7,8 @@ export const STATE_MAX_AGE_MS = 15 * 60_000
 
 // Written by the agent-routes plugin:
 // { updatedAt, errors, low, agents: { [id]: { model, fallbackFrom? } },
-//   quota: { [providerID]: { fiveHourLeft?, weeklyLeft?, checkedAt } } }
+//   quota: { [providerID]: { fiveHourLeft?, weeklyLeft?, checkedAt } },
+//   exhausted: { [providerID]: { detectedAt, until, windowMs } } }  (quota failures seen at runtime)
 export function statePath(env = process.env) {
   return join(env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "opencode", "agent-routes.json")
 }

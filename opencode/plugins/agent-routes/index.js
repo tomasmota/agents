@@ -18,6 +18,14 @@ import {
   statePath,
   validateRoutes,
 } from "./lib/agent-routes.js"
+import {
+  exhaustedSnapshot,
+  isQuotaFailure,
+  mergeExhausted,
+  onExhausted,
+  recordExhausted,
+  settleSharedExhausted,
+} from "./lib/exhausted.js"
 import { fetchQuotaShared } from "./lib/quota-cache.js"
 
 const QUOTA_REFRESH_MS = 5 * 60_000
@@ -36,7 +44,9 @@ async function setupAgentRoutes(ctx, { routesFile, stateFile, logFile, quotaSour
   let signature = ""
   let models = new Map()
   let providerIDs = new Set()
-  let quota = freshQuota((await readState({ path: stateFile, maxAgeMs: Infinity }))?.quota)
+  const initial = await readState({ path: stateFile, maxAgeMs: Infinity })
+  let quota = freshQuota(initial?.quota)
+  mergeExhausted(initial?.exhausted)
   let disposed = false
   let missingRechecks = 0
   const childSessions = new Map()
@@ -112,7 +122,7 @@ async function setupAgentRoutes(ctx, { routesFile, stateFile, logFile, quotaSour
     try {
       await mkdir(dirname(stateFile), { recursive: true })
       const tmp = `${stateFile}.${process.pid}.${randomUUID()}.tmp`
-      const state = { updatedAt: Date.now(), file: routesFile, errors, low: [...low], agents: effective, quota }
+      const state = { updatedAt: Date.now(), file: routesFile, errors, low: [...low], agents: effective, quota, exhausted: exhaustedSnapshot() }
       await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`)
       await rename(tmp, stateFile)
     } catch (error) {
@@ -141,7 +151,10 @@ async function setupAgentRoutes(ctx, { routesFile, stateFile, logFile, quotaSour
       return
     }
 
+    // Another process may have recorded a quota failure since the last sync.
+    mergeExhausted((await readState({ path: stateFile, maxAgeMs: Infinity }))?.exhausted)
     const low = lowProviders(quota, routes.quotaLow)
+    for (const provider of settleSharedExhausted(quota)) low.add(provider)
     const nextEffective = {}
     for (const agent of Object.values(routes.agents)) {
       const entry = effectiveModel(agent.model, {
@@ -281,6 +294,21 @@ async function setupAgentRoutes(ctx, { routesFile, stateFile, logFile, quotaSour
     }),
   )
 
+  // Backup for providers without a fresh quota reading: a quota failure marks the provider low for a while.
+  // The hook only observes; it never changes OpenCode's own retry decision.
+  registrations.push(
+    await ctx.session.hook("retry", async (event) => {
+      try {
+        const provider = event.model?.providerID
+        if (!provider || !routes?.fallbacks[provider] || !isQuotaFailure(event.error)) return
+        if (recordExhausted(provider)) await log(`${provider} hit its usage limit; treating it as low`)
+      } catch (error) {
+        await log(`retry hook failed: ${error}`)
+      }
+    }),
+  )
+  const stopExhausted = onExhausted(() => void queueSync())
+
   // Hide subagents the session may not spawn from its catalog.
   const trimCatalog = async (event) => {
     const tool = event.tools?.subagent
@@ -332,6 +360,7 @@ async function setupAgentRoutes(ctx, { routesFile, stateFile, logFile, quotaSour
   // An in-flight quota refresh may still resolve; `disposed` keeps it from syncing.
   return async () => {
     disposed = true
+    stopExhausted()
     events.abort()
     clearInterval(timer)
     clearTimeout(pendingSync)
