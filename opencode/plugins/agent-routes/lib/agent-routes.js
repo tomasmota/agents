@@ -29,6 +29,15 @@ export function freshQuota(quota, { now = Date.now(), maxAgeMs = STATE_MAX_AGE_M
   )
 }
 
+// Keeps the newest reading per provider; readings from other processes arrive through the state file.
+export function mergeQuota(known, incoming) {
+  const merged = { ...known }
+  for (const [provider, entry] of Object.entries(incoming ?? {})) {
+    if (entry?.checkedAt > (merged[provider]?.checkedAt ?? 0)) merged[provider] = entry
+  }
+  return merged
+}
+
 const MODES = new Set(["primary", "subagent", "all"])
 const EFFECTS = new Set(["allow", "ask", "deny"])
 const ROOT_KEYS = new Set(["fallbacks", "quotaLow", "permissions", "agents"])

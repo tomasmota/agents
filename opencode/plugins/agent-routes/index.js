@@ -12,6 +12,7 @@ import {
   evaluateRules,
   freshQuota,
   lowProviders,
+  mergeQuota,
   parseJsonc,
   parseModelRef,
   readState,
@@ -151,8 +152,11 @@ async function setupAgentRoutes(ctx, { routesFile, stateFile, logFile, quotaSour
       return
     }
 
-    // Another process may have recorded a quota failure since the last sync.
-    mergeExhausted((await readState({ path: stateFile, maxAgeMs: Infinity }))?.exhausted)
+    // Another process may have recorded a quota failure or a newer reading since the last sync; take both,
+    // so a marker that a newer reading supersedes is not written back.
+    const fileState = await readState({ path: stateFile, maxAgeMs: Infinity })
+    mergeExhausted(fileState?.exhausted)
+    quota = freshQuota(mergeQuota(quota, fileState?.quota))
     const low = lowProviders(quota, routes.quotaLow)
     for (const provider of settleSharedExhausted(quota)) low.add(provider)
     const nextEffective = {}
@@ -206,10 +210,7 @@ async function setupAgentRoutes(ctx, { routesFile, stateFile, logFile, quotaSour
   async function refreshQuota() {
     if (!routes) return
     const fromFile = (await readState({ path: stateFile, maxAgeMs: Infinity }))?.quota ?? {}
-    const known = { ...quota }
-    for (const [provider, entry] of Object.entries(fromFile)) {
-      if (entry?.checkedAt > (known[provider]?.checkedAt ?? 0)) known[provider] = entry
-    }
+    const known = mergeQuota(quota, fromFile)
     const wanted = new Set(
       Object.entries(routes.fallbacks).flatMap(([provider, model]) => [provider, parseModelRef(model).providerID]),
     )

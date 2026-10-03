@@ -372,3 +372,21 @@ test("does not fall back onto a provider that is also low", async (t) => {
   assert.equal(agents.get("terminal").model.providerID, "openai", "no chaining: both low keeps the configured model")
   assert.equal(agents.get("general").model.providerID, "claude-subscription")
 })
+
+test("a sync picks up a newer reading another process wrote instead of resurrecting the failure", async (t) => {
+  const { agents, events, files, sessionHooks } = await setup(t)
+  await sessionHooks.retry(quotaFailure("openai"))
+  await waitFor(() => agents.get("terminal")?.model?.providerID === "claude-subscription")
+
+  const checkedAt = Date.now() + 1_000
+  await writeFile(
+    files.stateFile,
+    JSON.stringify({ updatedAt: Date.now(), quota: { openai: { fiveHourLeft: 95, weeklyLeft: 95, checkedAt } }, exhausted: {} }),
+  )
+  events.push({ type: "model.updated", data: {} })
+  await waitFor(() => agents.get("terminal")?.model?.providerID === "openai")
+  const state = await readJson(files.stateFile)
+  assert.deepEqual(state.low, [])
+  assert.deepEqual(state.exhausted, {})
+  assert.equal(state.quota.openai.checkedAt, checkedAt)
+})

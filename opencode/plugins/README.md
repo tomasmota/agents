@@ -11,6 +11,7 @@ everything it imports. Packages may also export `./tui` for terminal behavior.
 | `stuck-command/` | `tomas.stuck-command-jev` | Asks Jev whether a foreground shell command that is still running is hung (after 60 s, then every 60 s) and interrupts the session with an explanation when it is. |
 | `tmux-title-jev/` | `tomas.tmux-title-jev` | After each completed turn, Jev compares the tmux title with the latest user message and final agent output; replaces misleading titles with `<repo>:<task>` while keeping titles that still fit. |
 | `gcloud-auth-healer/` | `tomas.gcloud-auth-healer` | Detects expired gcloud/ADC auth failures after shell commands, starts the re-login in the background (at most once per cooldown), and tells the agent to complete the browser prompt and poll. |
+| `agent-routes/` | `tomas.agent-routes` | Generates subagent roles from `subagents.jsonc`, swaps a role's model when its provider is low on quota or not configured (quota readings from the consumer's adapter, with a backup that reacts to quota failures), and applies `when`-scoped permission rules. See its [README](agent-routes/README.md). |
 | `auto-handoff/` | `tomas.auto-handoff` | When a session's request crosses a context threshold (default 250k tokens), asks the agent to do a handoff with the `handoff` skill — document, successor session, and pane attach all handled by that skill. The plugin itself only measures and steers, once per session. See its [README](auto-handoff/README.md). |
 
 Configuration is documented in the header comment of each plugin's entry file.
