@@ -316,6 +316,8 @@ export const JevAutoApprovePlugin = Plugin.define({
     fallbackConfigError = error
   }
   await context.permission.hook("evaluate", async (event) => {
+    // Hooks share one mutable event; never loosen a deny set by config or an earlier hook.
+    if (event.effect === "deny") return
     const startedAt = Date.now()
     const req = normalizeRequest(event)
     if (!req) return
