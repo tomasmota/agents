@@ -34,7 +34,7 @@ ambiguous.
 
 Register central skills with honest provenance/license metadata and choose their
 installation profiles in `manifest.json`. Central ownership does **not** mean all
-profiles must install them (`model-selector`/`use-uvx` are workstation-only today).
+profiles must install them (`model-selector`/`use-uvx`/`model-benchmarks` are workstation-only today).
 Do not add unconditional base triggers for absent skills. Consumer inventories
 identify generated skills; other owned skill sources follow that consumer's
 README. Never edit a generated skill or global instruction as the policy source.

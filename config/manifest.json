@@ -16,11 +16,12 @@
     "typesafe-ai": { "path": "skills/typesafe-ai", "source": "https://github.com/typesafe-ai/skills", "revision": "65a39f393687675ce170e6094757de20370365b9", "license": "MIT", "version": "content-sha256" },
     "handoff": { "path": "skills/handoff", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" },
     "model-selector": { "path": "skills/model-selector", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" },
-    "use-uvx": { "path": "skills/use-uvx", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" }
+    "use-uvx": { "path": "skills/use-uvx", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" },
+    "model-benchmarks": { "path": "skills/model-benchmarks", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" }
   },
   "profiles": {
-    "mac": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx"], "cli": true },
-    "home-linux": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx"], "cli": true },
+    "mac": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx", "model-benchmarks"], "cli": true },
+    "home-linux": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx", "model-benchmarks"], "cli": true },
     "coder": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command"], "skills": ["hey", "typesafe-ai", "handoff"], "cli": false }
   }
 }

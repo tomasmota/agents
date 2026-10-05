@@ -93,7 +93,7 @@ test("manifest has no self-referential release hash and every declared package h
   const files = await render(lock, adapter, root)
   const inventory = JSON.parse(files.get("out/inventory.json"))
   assert.equal(inventory.central.revision, lock.revision)
-  assert.equal(Object.keys(inventory.skills).length, 5)
+  assert.equal(Object.keys(inventory.skills).length, 6)
   assert.ok(!inventory.packages.some((entry) => entry.path.includes("compaction-preserve")))
   assert.ok(!Object.hasOwn(inventory.artifacts, "out/inventory.json"))
 })
