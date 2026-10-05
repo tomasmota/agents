@@ -94,3 +94,9 @@ CLI profiles require `opencode/lib/` and `opencode/subagents.jsonc` as siblings
 of the generated skills directory (under the same parent). The portable
 model-selector's imports and routing defaults depend on this validated layout;
 tests import the generated selector without making any inference request.
+
+CLI profiles also receive the runtime-neutral permission review core in
+`opencode/lib/permission-review/` (`permission-review.js` with its
+`jev-client.js` and `decision-audit.js`), copied from
+`opencode/plugins/auto-approve-jev/lib/` so non-OpenCode hosts can share the
+same policy at the locked revision.

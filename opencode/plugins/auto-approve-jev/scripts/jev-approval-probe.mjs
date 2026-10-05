@@ -1,8 +1,8 @@
 const API_URL = "https://api.typesafe.ai/v1/systemone"
 
-import { JevAutoApprovePlugin } from "../auto-approve-jev.js"
+import { permissionReviewHelpers } from "../lib/permission-review.js"
 
-const { QUESTIONS, composeJevDecision, jevState, parseJevResponse } = JevAutoApprovePlugin.__test()
+const { QUESTIONS, composeJevDecision, jevState, parseJevResponse } = permissionReviewHelpers
 
 const cases = [
   ["read status", "git status"],

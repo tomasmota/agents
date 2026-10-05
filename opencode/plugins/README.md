@@ -14,7 +14,8 @@ everything it imports. Packages may also export `./tui` for terminal behavior.
 | `agent-routes/` | `tomas.agent-routes` | Generates subagent roles from `subagents.jsonc`, swaps a role's model when its provider is low on quota or not configured (quota readings from the consumer's adapter, with a backup that reacts to quota failures), and applies `when`-scoped permission rules. See its [README](agent-routes/README.md). |
 | `auto-handoff/` | `tomas.auto-handoff` | When a session's request crosses a context threshold (default 250k tokens), asks the agent to do a handoff with the `handoff` skill — document, successor session, and pane attach all handled by that skill. The plugin itself only measures and steers, once per session. See its [README](auto-handoff/README.md). |
 
-Configuration is documented in the header comment of each plugin's entry file.
+Configuration is documented in the header comment of each plugin's entry file
+(for `auto-approve-jev`, in `lib/permission-review.js`).
 The Jev integrations read `TYPESAFE_API_KEY` from the environment, falling back to
 `~/.config/home-manager/secrets.env`.
 
@@ -46,6 +47,17 @@ SHAs; the personal machines (`home-manager`) track `main`.
 `decision-audit.js`. Other packages carry the shared files they use because
 each Git package is installed independently. Change the canonical file, copy it
 to the consumers, and keep the shared-copy tests current.
+
+`auto-approve-jev/lib/permission-review.js` is the runtime-neutral permission
+policy; the OpenCode plugin is a thin hook around it. Other hosts call
+`createPermissionEvaluator({ generate, directory, requestJev })`, where
+`generate.text({ model: { providerID, id }, prompt })` resolves to `{ text }`,
+`directory` is the project directory (`OPENCODE_REVIEW_DIR` wins) and the
+optional `requestJev` replaces the bundled Jev client with the same signature.
+The returned `evaluate(event)` mutates an OpenCode-style
+`{ effect, sessionID, action, resources, message }` event and never loosens an
+existing deny. CLI profiles render it with its two imports into
+`opencode/lib/permission-review/` (see `config/README.md`).
 
 ## Tests
 

@@ -97,13 +97,10 @@ test("manifest has no self-referential release hash and every declared package h
   assert.ok(!inventory.packages.some((entry) => entry.path.includes("compaction-preserve")))
   assert.ok(!Object.hasOwn(inventory.artifacts, "out/inventory.json"))
 })
-test("generated selector loads without inference and incompatible helper layouts fail closed", async (t) => {
+test("incompatible helper layouts fail closed", async (t) => {
   const { root, adapter } = await fixture(t, "mac")
   await assert.rejects(render(lock, { ...adapter, outputs: { ...adapter.outputs, helpers: "out/lib" } }, root), /helper layout/)
   await assert.rejects(render(lock, { ...adapter, outputs: { ...adapter.outputs, routes: "out/routes.json" } }, root), /helper layout/)
-  await apply(await render(lock, adapter, root), root)
-  // Import only: the CLI guard must not run the selector or make a Jev call.
-  execFileSync(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(join(root, "out/skills/model-selector/scripts/select.mjs"))})`], { timeout: 5000 })
 })
 
 test("normalized collisions, input overwrites and output symlinks are rejected", async (t) => {

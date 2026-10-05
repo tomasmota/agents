@@ -159,6 +159,11 @@ export async function render(lock, adapter, root, source = SOURCE) {
       const path = file === "jev-client.js" ? "opencode/lib/jev-client.js" : `opencode/plugins/agent-routes/lib/${file}`
       add(`${adapter.outputs.helpers}/${file}`, await readFile(join(source, path)))
     }
+    // Runtime-neutral permission review core for non-OpenCode hosts; its
+    // relative imports require the three files to stay together.
+    for (const file of ["permission-review.js", "jev-client.js", "decision-audit.js"]) {
+      add(`${adapter.outputs.helpers}/permission-review/${file}`, await readFile(join(source, "opencode/plugins/auto-approve-jev/lib", file)))
+    }
   }
   if (adapter.outputs.inventoryTool) add(adapter.outputs.inventoryTool, await readFile(join(source, "config/inventory.mjs")))
   const inputs = { adapter: hash(json(adapter)), files: {} }
