@@ -17,7 +17,8 @@
     "handoff": { "path": "skills/handoff", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" },
     "model-selector": { "path": "skills/model-selector", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" },
     "use-uvx": { "path": "skills/use-uvx", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" },
-    "model-benchmarks": { "path": "skills/model-benchmarks", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" }
+    "model-benchmarks": { "path": "skills/model-benchmarks", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" },
+    "tmux-control": { "path": "skills/tmux-control", "source": "owner-maintained", "license": "MIT", "version": "content-sha256" }
   },
   "profiles": {
     "mac": { "plugins": ["agent-routes", "auto-retitle", "auto-approve-jev", "stuck-command", "tmux-title-jev", "gcloud-auth-healer", "auto-handoff"], "skills": ["hey", "typesafe-ai", "handoff", "model-selector", "use-uvx", "model-benchmarks"], "cli": true },

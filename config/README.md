@@ -39,6 +39,12 @@ Do not add unconditional base triggers for absent skills. Consumer inventories
 identify generated skills; other owned skill sources follow that consumer's
 README. Never edit a generated skill or global instruction as the policy source.
 
+`tmux-control` is consumed independently by native omp on the workstation, as a
+single immutable, hash-checked `SKILL.md` in its Home Manager module. It is
+registered here for provenance but not selected by an OpenCode profile. Updating
+it does not require enabling OpenCode skill discovery in omp or changing the
+existing OpenCode/Coder profile selections.
+
 After changing shared guidance/skills: test and review central changes, commit/push,
 advance each intended consumer's full-SHA lock, render/check, inspect the platform
 and skill-availability diffs, then deploy and verify each target by its runbook.
